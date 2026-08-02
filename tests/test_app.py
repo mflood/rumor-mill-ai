@@ -42,6 +42,19 @@ def test_today_page_is_a_server_rendered_one_minute_briefing() -> None:
     assert "Forget this visit" in response.text
 
 
+def test_town_fallback_is_navigable_without_live_state_or_map_imagery() -> None:
+    with TestClient(app) as client:
+        response = client.get("/lighthouse/town")
+
+    assert response.status_code == 200
+    assert '<main id="town"' in response.text
+    assert 'role="status"' in response.text
+    assert "The live town signal is unavailable" in response.text
+    assert "Northlight Lighthouse" in response.text
+    assert "Orin’s Cottage" in response.text
+    assert '<nav class="island-chart" aria-label="Greyhaven locations">' in response.text
+
+
 def test_lighthouse_visual_system_includes_accessibility_states() -> None:
     """The design system exposes focus, small-screen, and reduced-motion rules."""
     with TestClient(app) as client:
