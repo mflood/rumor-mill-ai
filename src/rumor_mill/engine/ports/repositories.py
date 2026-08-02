@@ -125,6 +125,21 @@ class SceneRepository(Protocol):
     def get(self, scene_id: UUID) -> GeneratedSceneRecord | None: ...
 
 
+class MemoryRepository(Protocol):
+    def add(self, run_id: UUID, memory: Memory) -> None: ...
+
+    def find_by_source(
+        self,
+        run_id: UUID,
+        character_id: UUID,
+        *,
+        event_id: UUID | None = None,
+        claim_id: UUID | None = None,
+    ) -> Memory | None: ...
+
+    def list_for_character(self, run_id: UUID, character_id: UUID) -> tuple[Memory, ...]: ...
+
+
 class UnitOfWork(Protocol):
     @property
     def worlds(self) -> WorldRepository: ...
@@ -140,6 +155,9 @@ class UnitOfWork(Protocol):
 
     @property
     def scenes(self) -> SceneRepository: ...
+
+    @property
+    def memories(self) -> MemoryRepository: ...
 
     def __enter__(self) -> Self: ...
 

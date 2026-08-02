@@ -100,6 +100,8 @@ class Memory(ContractModel):
     experienced_at: datetime
     remembered_at: datetime
     confidence: Confidence
+    salience: Confidence = 0.5
+    plot_importance: Confidence = 0.0
     provenance: Provenance
     visibility: Visibility = Visibility.PRIVATE
     lifecycle: Lifecycle
