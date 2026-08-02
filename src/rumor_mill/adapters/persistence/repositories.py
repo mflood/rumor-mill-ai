@@ -53,8 +53,15 @@ class SqlAlchemyWorldRepository:
             )
         )
 
+    def get(self, world_id: UUID) -> WorldRecord | None:
+        return self._record(self._session.get(WorldModel, world_id))
+
     def get_by_slug(self, slug: str) -> WorldRecord | None:
         model = self._session.scalar(select(WorldModel).where(WorldModel.slug == slug))
+        return self._record(model)
+
+    @staticmethod
+    def _record(model: WorldModel | None) -> WorldRecord | None:
         if model is None:
             return None
         return WorldRecord(
