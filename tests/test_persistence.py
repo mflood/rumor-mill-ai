@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -25,7 +26,8 @@ from rumor_mill.adapters.persistence.database import (
     DEFAULT_MIGRATION_DATABASE_URL,
     resolve_migration_database_url,
 )
-from rumor_mill.adapters.persistence.models import Base, WorldModel
+from rumor_mill.adapters.persistence.llm_tracing import SqlAlchemyLlmTraceStore
+from rumor_mill.adapters.persistence.models import Base, LlmTraceMessageModel, WorldModel
 from rumor_mill.engine.domain import Event, Lifecycle, Provenance, ProvenanceKind
 from rumor_mill.engine.ports import RunRecord, RunStatus, WorldRecord
 
@@ -49,6 +51,7 @@ TABLES = {
     "narrative_reports",
     "worker_heartbeats",
     "operator_audit_entries",
+    "llm_trace_messages",
 }
 
 
@@ -269,6 +272,75 @@ def test_unique_and_check_constraints(
 
 def test_model_metadata_represents_every_state_family() -> None:
     assert set(Base.metadata.tables) == TABLES
+
+
+def test_llm_trace_store_persists_outbound_and_inbound_rows_independently(
+    sqlite_database: tuple[str, Engine, sessionmaker[Session]],
+) -> None:
+    _, _, factory = sqlite_database
+    store = SqlAlchemyLlmTraceStore(factory)
+    call_id = uid(800)
+
+    store.record_outbound(
+        call_id=call_id,
+        provider="openai",
+        model="gpt-test",
+        purpose="character_conversation",
+        messages=[
+            {"role": "developer", "content": "private prompt"},
+            {"role": "user", "content": "hello"},
+        ],
+    )
+    with factory() as database:
+        outbound = database.scalars(
+            select(LlmTraceMessageModel).where(LlmTraceMessageModel.call_id == call_id)
+        ).all()
+        assert [row.payload["content"] for row in outbound] == ["private prompt", "hello"]
+
+    store.record_inbound(
+        call_id=call_id,
+        sequence=0,
+        provider="openai",
+        model="gpt-test",
+        purpose="character_conversation",
+        item_type="error",
+        payload={"error_code": "provider_error"},
+        duration_ms=17,
+    )
+    with factory() as database:
+        rows = database.scalars(
+            select(LlmTraceMessageModel)
+            .where(LlmTraceMessageModel.call_id == call_id)
+            .order_by(LlmTraceMessageModel.direction, LlmTraceMessageModel.sequence)
+        ).all()
+        assert len(rows) == 3
+        inbound = next(row for row in rows if row.direction == "inbound")
+        assert inbound.item_type == "error"
+        assert inbound.duration_ms == 17
+
+
+def test_llm_trace_store_failure_does_not_break_model_calls() -> None:
+    class BrokenSession:
+        def __enter__(self) -> "BrokenSession":
+            raise RuntimeError("database unavailable")
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    store = SqlAlchemyLlmTraceStore(lambda: BrokenSession())  # type: ignore[arg-type]
+
+    with patch("rumor_mill.adapters.persistence.llm_tracing.logger.exception") as logged:
+        store.record_inbound(
+            call_id=uid(801),
+            sequence=0,
+            provider="openai",
+            model="gpt-test",
+            purpose="test",
+            item_type="response",
+            payload={"id": "response-1"},
+        )
+
+    logged.assert_called_once_with("llm_trace_write_failed")
 
 
 @pytest.mark.postgres

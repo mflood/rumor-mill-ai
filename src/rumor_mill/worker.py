@@ -14,6 +14,7 @@ from rumor_mill.adapters.persistence import (
     create_database_engine,
     create_session_factory,
 )
+from rumor_mill.adapters.persistence.llm_tracing import SqlAlchemyLlmTraceStore
 from rumor_mill.adapters.persistence.models import WorkerHeartbeatModel
 from rumor_mill.adapters.providers import create_model_provider
 from rumor_mill.config import Settings, get_settings
@@ -178,6 +179,7 @@ def main(settings: Settings | None = None) -> None:
     provider = create_model_provider(
         settings,
         metrics=metrics,
+        trace_store=(SqlAlchemyLlmTraceStore(factory) if settings.llm_trace_enabled else None),
         fake_responses={
             "off_screen_scene": {
                 "title": "Greyhaven dispatch",

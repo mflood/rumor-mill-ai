@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from typing import Any
 
+from rumor_mill.adapters.persistence.llm_tracing import SqlAlchemyLlmTraceStore
 from rumor_mill.adapters.providers.fake import DeterministicFakeProvider
 from rumor_mill.adapters.providers.openai import OpenAIProvider
 from rumor_mill.config import Settings
@@ -15,6 +16,7 @@ def create_model_provider(
     *,
     fake_responses: Mapping[str, Mapping[str, Any]] | None = None,
     metrics: MetricsRegistry | None = None,
+    trace_store: SqlAlchemyLlmTraceStore | None = None,
 ) -> ModelProvider:
     """Create the configured adapter without reading configuration anywhere else."""
 
@@ -23,7 +25,7 @@ def create_model_provider(
     elif settings.model_provider == "openai":
         if settings.openai_api_key is None:
             raise ProviderAuthenticationError("OpenAI API key is not configured")
-        provider = OpenAIProvider(settings)
+        provider = OpenAIProvider(settings, trace_sink=trace_store)
     else:
         raise ValueError(f"Unsupported model provider '{settings.model_provider}'")
     if metrics is None:

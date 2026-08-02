@@ -1,7 +1,7 @@
 """End-to-end coverage for a returning player's complete story lifecycle."""
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -130,7 +130,7 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
                         kind="story_card",
                         title="The bell after midnight",
                         body="Ada heard two notes carry down from the archive.",
-                        generated_at=datetime.now(UTC),
+                        generated_at=datetime.fromisoformat(advanced.json()["simulation_time"]),
                         source_ids=[str(uuid4())],
                         payload={
                             "visibility": "public",

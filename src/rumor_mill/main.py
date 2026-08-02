@@ -29,6 +29,7 @@ from rumor_mill.adapters.persistence import (
     create_database_engine,
     create_session_factory,
 )
+from rumor_mill.adapters.persistence.llm_tracing import SqlAlchemyLlmTraceStore
 from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
     ConversationModel,
@@ -314,6 +315,9 @@ def create_app(
         provider = create_model_provider(
             settings,
             metrics=metrics,
+            trace_store=(
+                SqlAlchemyLlmTraceStore(session_factory) if settings.llm_trace_enabled else None
+            ),
             fake_responses={
                 "character_conversation": {
                     "reply": "The harbor carries more stories than answers. Ask me what I saw.",

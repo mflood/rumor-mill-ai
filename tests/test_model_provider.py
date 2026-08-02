@@ -1,8 +1,12 @@
 """Provider contract, deterministic fake, and OpenAI adapter tests."""
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import Enum
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import httpx
 import openai
@@ -14,7 +18,7 @@ from rumor_mill.adapters.providers import (
     OpenAIProvider,
     create_model_provider,
 )
-from rumor_mill.adapters.providers.openai import normalize_openai_error
+from rumor_mill.adapters.providers.openai import _json_payload, normalize_openai_error
 from rumor_mill.config import Settings
 from rumor_mill.engine.ports import (
     GenerationRequest,
@@ -36,6 +40,22 @@ from rumor_mill.engine.ports import (
 class ScenePlan(BaseModel):
     title: str
     tension: int
+
+
+class TraceValue(Enum):
+    READY = "ready"
+
+
+@dataclass
+class TraceData:
+    status: TraceValue
+
+
+class TraceString:
+    __slots__ = ()
+
+    def __str__(self) -> str:
+        return "fallback"
 
 
 def request() -> GenerationRequest:
@@ -196,6 +216,34 @@ class ClientStub:
         return StreamManagerStub(self.response)
 
 
+class TraceSinkStub:
+    def __init__(self) -> None:
+        self.outbound: list[dict[str, Any]] = []
+        self.inbound: list[dict[str, Any]] = []
+
+    def record_outbound(
+        self,
+        *,
+        call_id: UUID,
+        provider: str,
+        model: str,
+        purpose: str,
+        messages: Sequence[dict[str, Any]],
+    ) -> None:
+        self.outbound.append(
+            {
+                "call_id": call_id,
+                "provider": provider,
+                "model": model,
+                "purpose": purpose,
+                "messages": list(messages),
+            }
+        )
+
+    def record_inbound(self, **values: Any) -> None:
+        self.inbound.append(values)
+
+
 def openai_settings() -> Settings:
     return Settings(
         model_provider="openai",
@@ -231,9 +279,54 @@ def test_openai_adapter_generates_without_logging_secrets_or_prompts(
     assert "next secret scene" not in logs
 
 
+def test_openai_adapter_traces_outbound_before_successful_inbound_response() -> None:
+    trace = TraceSinkStub()
+    client = ClientStub(ResponseStub(parsed=ScenePlan(title="The Signal", tension=7)))
+    provider = OpenAIProvider(openai_settings(), client=client, trace_sink=trace)
+
+    provider.generate(request())
+
+    assert [item["role"] for item in trace.outbound[0]["messages"]] == ["developer", "user"]
+    assert trace.inbound[0]["call_id"] == trace.outbound[0]["call_id"]
+    assert trace.inbound[0]["item_type"] == "response"
+    assert trace.inbound[0]["payload"]["id"] == "response-123"
+    assert trace.inbound[0]["duration_ms"] >= 0
+
+
+def test_openai_adapter_keeps_outbound_trace_when_call_fails() -> None:
+    trace = TraceSinkStub()
+    provider = OpenAIProvider(
+        openai_settings(), client=ClientStub(error=ValueError("private failure")), trace_sink=trace
+    )
+
+    with pytest.raises(ProviderError):
+        provider.generate(request())
+
+    assert len(trace.outbound) == 1
+    assert trace.inbound[0]["item_type"] == "error"
+    assert trace.inbound[0]["payload"] == {"error_code": "provider_error", "retryable": False}
+    assert "private failure" not in str(trace.inbound)
+
+
+def test_trace_payload_normalizes_sdk_compatible_value_shapes() -> None:
+    assert _json_payload("text") == {"value": "text"}
+    assert _json_payload(
+        {
+            "dataclass": TraceData(TraceValue.READY),
+            "exception": ValueError("secret"),
+            "items": (None, True, TraceString()),
+        }
+    ) == {
+        "dataclass": {"status": "ready"},
+        "exception": {"type": "ValueError"},
+        "items": [None, True, "fallback"],
+    }
+
+
 def test_openai_adapter_streams_typed_completion() -> None:
     client = ClientStub(ResponseStub(parsed=ScenePlan(title="The Signal", tension=7)))
-    provider = OpenAIProvider(openai_settings(), client=client)
+    trace = TraceSinkStub()
+    provider = OpenAIProvider(openai_settings(), client=client, trace_sink=trace)
 
     events = tuple(provider.stream(request()))
 
@@ -244,6 +337,16 @@ def test_openai_adapter_streams_typed_completion() -> None:
     assert events[1].result.usage == Usage(0, 0, 0)
     assert client.stream_arguments["text_format"] is ScenePlan
     assert client.stream_arguments["store"] is False
+    assert [item["item_type"] for item in trace.inbound] == [
+        "response_event",
+        "response_event",
+        "response",
+    ]
+    assert trace.inbound[1]["payload"] == {
+        "type": "response.output_text.delta",
+        "delta": "partial",
+    }
+    assert trace.inbound[-1]["duration_ms"] >= 0
 
 
 def test_openai_adapter_rejects_missing_structured_response() -> None:
@@ -282,6 +385,7 @@ def test_openai_configuration_comes_from_environment(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("RUMOR_MILL_OPENAI_MODEL", "environment-model")
     monkeypatch.setenv("RUMOR_MILL_OPENAI_TIMEOUT_SECONDS", "9")
     monkeypatch.setenv("RUMOR_MILL_OPENAI_MAX_RETRIES", "3")
+    monkeypatch.setenv("LLM_TRACE_ENABLED", "1")
 
     settings = Settings(_env_file=None)
 
@@ -291,6 +395,7 @@ def test_openai_configuration_comes_from_environment(monkeypatch: pytest.MonkeyP
     assert settings.openai_model == "environment-model"
     assert settings.openai_timeout_seconds == 9
     assert settings.openai_max_retries == 3
+    assert settings.llm_trace_enabled is True
 
 
 def test_provider_factory_supports_fake_openai_and_rejects_invalid_configuration() -> None:
