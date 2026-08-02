@@ -8,8 +8,10 @@ from typing import Any, Protocol, Self
 from uuid import UUID
 
 from rumor_mill.engine.domain import (
+    Belief,
     Claim,
     Event,
+    Evidence,
     Memory,
     PresentationArtifact,
     Scene,
@@ -140,6 +142,16 @@ class MemoryRepository(Protocol):
     def list_for_character(self, run_id: UUID, character_id: UUID) -> tuple[Memory, ...]: ...
 
 
+class BeliefRepository(Protocol):
+    def add_evidence(self, run_id: UUID, evidence: Evidence) -> None: ...
+
+    def add_version(self, run_id: UUID, belief: Belief) -> None: ...
+
+    def get_current(self, run_id: UUID, character_id: UUID, claim_id: UUID) -> Belief | None: ...
+
+    def list_evidence(self, run_id: UUID, belief: Belief) -> tuple[Evidence, ...]: ...
+
+
 class UnitOfWork(Protocol):
     @property
     def worlds(self) -> WorldRepository: ...
@@ -158,6 +170,9 @@ class UnitOfWork(Protocol):
 
     @property
     def memories(self) -> MemoryRepository: ...
+
+    @property
+    def beliefs(self) -> BeliefRepository: ...
 
     def __enter__(self) -> Self: ...
 

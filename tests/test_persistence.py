@@ -33,6 +33,7 @@ TABLES = {
     "events",
     "claims",
     "beliefs",
+    "evidence",
     "memories",
     "scenes",
     "conversations",

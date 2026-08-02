@@ -138,6 +138,24 @@ class BeliefModel(IdMixin, CreatedMixin, Base):
     )
 
 
+class EvidenceModel(IdMixin, CreatedMixin, Base):
+    __tablename__ = "evidence"
+
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
+    claim_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("claims.id", ondelete="CASCADE"), nullable=False
+    )
+    stance: Mapped[str] = mapped_column(String(20), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("stance IN ('supports','refutes','ambiguous')", name="valid_stance"),
+        Index("ix_evidence_run_claim", "run_id", "claim_id"),
+    )
+
+
 class MemoryModel(IdMixin, CreatedMixin, Base):
     __tablename__ = "memories"
 
