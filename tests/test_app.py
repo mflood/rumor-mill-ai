@@ -55,6 +55,18 @@ def test_town_fallback_is_navigable_without_live_state_or_map_imagery() -> None:
     assert '<nav class="island-chart" aria-label="Greyhaven locations">' in response.text
 
 
+def test_archive_fallback_explains_publication_and_spoiler_boundaries() -> None:
+    with TestClient(app) as client:
+        response = client.get("/lighthouse/archive")
+
+    assert response.status_code == 200
+    assert '<main id="archive"' in response.text
+    assert "Previously," in response.text
+    assert "Hidden canon and private conversations never enter this binding" in response.text
+    assert 'role="status"' in response.text
+    assert 'property="og:title"' in response.text
+
+
 def test_lighthouse_visual_system_includes_accessibility_states() -> None:
     """The design system exposes focus, small-screen, and reduced-motion rules."""
     with TestClient(app) as client:
