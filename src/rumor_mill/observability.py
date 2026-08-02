@@ -35,7 +35,17 @@ def bind_correlation(value: str | None = None) -> Token[str | None]:
 class JsonFormatter(logging.Formatter):
     """Format records as single-line JSON without inspecting message payloads."""
 
-    _fields = ("provider", "model", "purpose", "error_code", "method", "path", "status_code")
+    _fields = (
+        "provider",
+        "model",
+        "purpose",
+        "error_code",
+        "method",
+        "path",
+        "status_code",
+        "playable_story_available",
+        "readiness_reason",
+    )
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {

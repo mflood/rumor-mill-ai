@@ -75,9 +75,17 @@ from rumor_mill.observability import (
     correlation_id,
 )
 from rumor_mill.worlds.authoring import AuthoredCharacter, AuthoredLocation, WorldDefinition
+from rumor_mill.worlds.continuity import validate_continuity
 from rumor_mill.worlds.town_state import TownState
 
 T = TypeVar("T")
+ProductReadinessReason = Literal[
+    "available",
+    "missing_world",
+    "invalid_world",
+    "no_running_season",
+    "database_unavailable",
+]
 logger = logging.getLogger(__name__)
 
 
@@ -92,6 +100,13 @@ class ReadinessResponse(BaseModel):
     status: Literal["ok", "degraded"]
     environment: str
     components: dict[str, Literal["ok", "degraded"]]
+
+
+class ProductReadinessResponse(BaseModel):
+    status: Literal["ok", "degraded"]
+    environment: str
+    playable_story_available: bool
+    reason: ProductReadinessReason
 
 
 class ApiModel(BaseModel):
@@ -534,6 +549,27 @@ def create_app(
             .limit(1)
         )
 
+    def product_readiness(database: Session) -> tuple[bool, ProductReadinessReason]:
+        """Validate the public Lighthouse world and require a running season."""
+        try:
+            world = database.scalar(select(WorldModel).where(WorldModel.slug == "lighthouse"))
+            if world is None:
+                return False, "missing_world"
+            try:
+                definition = WorldDefinition.model_validate(world.definition)
+            except ValueError:
+                return False, "invalid_world"
+            if validate_continuity(definition):
+                return False, "invalid_world"
+            run = database.scalar(
+                select(RunModel.id)
+                .where(RunModel.world_id == world.id, RunModel.status == RunStatus.RUNNING)
+                .limit(1)
+            )
+            return (True, "available") if run is not None else (False, "no_running_season")
+        except Exception:  # pragma: no cover - requires a runtime database outage
+            return False, "database_unavailable"
+
     def active_story(database: Session, token: str | None) -> RunModel | None:
         visitor = optional_visitor(database, token)
         if visitor is None or visitor.active_run_id is None:
@@ -611,6 +647,25 @@ def create_app(
             status=overall, environment=settings.environment, components=components
         )
 
+    @app.get("/health/product", response_model=ProductReadinessResponse, tags=["system"])
+    def product_ready(
+        response: Response, database: Annotated[Session, Depends(session)]
+    ) -> ProductReadinessResponse:
+        playable, reason = product_readiness(database)
+        metrics.set("playable_story_available", float(playable))
+        logger.info(
+            "product_readiness_checked",
+            extra={"playable_story_available": playable, "readiness_reason": reason},
+        )
+        if not playable:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return ProductReadinessResponse(
+            status="ok" if playable else "degraded",
+            environment=settings.environment,
+            playable_story_available=playable,
+            reason=reason,
+        )
+
     @app.get("/metrics", response_class=PlainTextResponse, tags=["system"])
     def prometheus_metrics(database: Annotated[Session, Depends(session)]) -> PlainTextResponse:
         now = datetime.now(UTC)
@@ -631,6 +686,8 @@ def create_app(
             .where(JobModel.status.in_(("pending", "failed")), JobModel.available_at < now)
         )
         metrics.set("job_lag_count", float(lag or 0))
+        playable, _ = product_readiness(database)
+        metrics.set("playable_story_available", float(playable))
         return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
 
     @app.get("/lighthouse", response_class=HTMLResponse, include_in_schema=False)

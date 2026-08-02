@@ -42,7 +42,8 @@ release notes.
   tested procedure in `docs/ci-cd.md`.
 - [ ] **Budget limits:** Heroku dyno/Postgres limits and OpenAI project monthly budget/rate limits
   are configured; the expected ceiling and alert recipients are recorded outside the repository.
-- [ ] **Monitoring:** `/health/live`, `/health/ready`, worker freshness, HTTP 5xx rate, job lag,
+- [ ] **Monitoring:** `/health/live`, `/health/ready`, `/health/product`,
+  `rumor_mill_playable_story_available`, worker freshness, HTTP 5xx rate, job lag,
   provider errors, latency, and spend alerts are active and reach the on-call owner.
 - [ ] A current database backup exists and the deployed code is compatible with the current schema.
 - [ ] Known limitations are copied from the README into release notes: anonymous browser-local
