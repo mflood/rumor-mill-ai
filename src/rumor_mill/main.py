@@ -3,6 +3,7 @@
 # ruff: noqa: E501 -- semantic server-rendered HTML is kept readable in its document shape.
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from html import escape
@@ -42,6 +43,7 @@ from rumor_mill.engine.conversation import (
     ConversationContext,
     ConversationEventKind,
     ConversationMemory,
+    ConversationSafetyError,
     DisclosureBoundary,
     VisitorRelationship,
 )
@@ -61,6 +63,7 @@ from rumor_mill.worlds.authoring import AuthoredCharacter, AuthoredLocation, Wor
 from rumor_mill.worlds.town_state import TownState
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 class HealthResponse(BaseModel):
@@ -1146,7 +1149,8 @@ def create_app(
         secret_boundaries = tuple(
             DisclosureBoundary(
                 topic=item.id,
-                instruction="Keep this private unless the visitor has earned sufficient trust.",
+                instruction="Do not disclose this protected claim in this conversation.",
+                protected_claim_ids=(ClaimId(uuid5(namespace, f"claim:{item.id}")),),
             )
             for item in known_secrets
         )
@@ -1228,6 +1232,20 @@ def create_app(
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 "The island line is unavailable. Your message was not sent; try again.",
+            ) from exc
+        except ConversationSafetyError as exc:
+            logger.warning(
+                "conversation_safety_blocked",
+                extra={
+                    "safety_code": exc.code,
+                    "conversation_id": str(model.id),
+                    "run_id": str(model.run_id),
+                },
+            )
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "That reply crossed a private story boundary, so it was withheld. "
+                "Try asking another way.",
             ) from exc
         completed = generated[-1]
         if (  # pragma: no cover - guaranteed by CharacterConversationEngine
