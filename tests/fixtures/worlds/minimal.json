@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "id": "lantern-market",
+    "title": "Lantern Market",
+    "summary": "A courier discovers the market archivist is hiding a dangerous key.",
+    "author": "Six Wands Studios",
+    "content_rating": "Teen"
+  },
+  "cast": [
+    {
+      "id": "ada",
+      "name": "Ada",
+      "description": "An observant courier who notices what others overlook.",
+      "home_location_id": "market"
+    },
+    {
+      "id": "bea",
+      "name": "Bea",
+      "description": "The guarded keeper of the market archive.",
+      "home_location_id": "archive"
+    }
+  ],
+  "locations": [
+    {
+      "id": "market",
+      "name": "Lantern Market",
+      "description": "A crowded covered market."
+    },
+    {
+      "id": "archive",
+      "name": "Market Archive",
+      "description": "A locked room above the west stalls.",
+      "parent_location_id": "market"
+    }
+  ],
+  "initial_relationships": [
+    {
+      "id": "ada-bea",
+      "source_character_id": "ada",
+      "target_character_id": "bea",
+      "kind": "friend",
+      "visibility": "participants"
+    }
+  ],
+  "truth": [
+    {
+      "id": "key-opens-observatory",
+      "statement": "The brass key opens the abandoned observatory.",
+      "character_ids": ["bea"],
+      "location_ids": ["archive"]
+    }
+  ],
+  "secrets": [
+    {
+      "id": "bea-has-key",
+      "statement": "Bea possesses the observatory key.",
+      "holder_ids": ["bea"],
+      "known_by_ids": ["bea"],
+      "truth_id": "key-opens-observatory"
+    }
+  ],
+  "beat_graph": {
+    "entry_beat_ids": ["hidden-key"],
+    "beats": [
+      {
+        "id": "hidden-key",
+        "title": "The Hidden Key",
+        "summary": "Ada sees Bea conceal a brass key beneath the west stall.",
+        "character_ids": ["ada", "bea"],
+        "location_id": "market",
+        "establishes_truth_ids": ["key-opens-observatory"]
+      },
+      {
+        "id": "quiet-question",
+        "title": "A Quiet Question",
+        "summary": "Ada asks why Bea was near the locked archive.",
+        "character_ids": ["ada", "bea"],
+        "location_id": "archive",
+        "depends_on": ["hidden-key"],
+        "reveals_secret_ids": ["bea-has-key"]
+      }
+    ]
+  }
+}

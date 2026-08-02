@@ -6,6 +6,9 @@ The MVP's system boundaries, data flow, and non-goals are documented in the
 [architecture overview](docs/architecture/README.md). Architectural decisions are recorded as
 [ADRs](docs/adr/README.md).
 
+Worlds are defined as validated, versioned JSON. See the
+[world-authoring format](docs/world-authoring-format.md) and its minimal fixture.
+
 The first authored world's objective canon and narrative constraints live in the
 [Lighthouse story bible](docs/worlds/lighthouse/story-bible.md).
 
