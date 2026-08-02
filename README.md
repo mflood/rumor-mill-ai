@@ -11,6 +11,8 @@ Worlds are defined as validated, versioned JSON. See the
 
 The first authored world's objective canon and narrative constraints live in the
 [Lighthouse story bible](docs/worlds/lighthouse/story-bible.md).
+Its mobile-first visitor journeys and launch requirements are defined in the
+[Lighthouse MVP experience specification](docs/worlds/lighthouse/mvp-experience.md).
 
 ## Quick start
 
