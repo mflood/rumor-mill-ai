@@ -19,6 +19,7 @@ from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
     Base,
     EventModel,
+    NarrativeReportModel,
     VisitorCharacterStateModel,
     VisitorModel,
 )
@@ -556,6 +557,235 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
     empty = client.get(f"/lighthouse/runs/{empty_run}/archive")
     assert "The binding is empty" in empty.text
     assert "No public dispatch has been bound" in empty.text
+
+
+def test_players_report_messages_panels_and_episodes_with_safe_references(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    start_visitor_session(client)
+    conversation = client.post(
+        f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
+    ).json()
+    conversation_id = UUID(conversation["id"])
+    message_id = UUID(
+        client.post(
+            f"/api/v1/conversations/{conversation_id}/messages",
+            json={"content": "This private text must not enter diagnostics."},
+        ).json()["messages"][0]["id"]
+    )
+    artifact_id = uuid4()
+    panel_id = uuid4()
+    with factory() as database:
+        database.add(
+            ArtifactModel(
+                id=artifact_id,
+                run_id=run_id,
+                kind="daily_recap",
+                title="Public dispatch",
+                body="Public body must not enter diagnostics.",
+                generated_at=datetime.now(UTC),
+                source_ids=[str(panel_id)],
+                payload={
+                    "visibility": "public",
+                    "recap": {
+                        "story_date": "2026-08-02",
+                        "headline": "A difficult signal",
+                        "dek": "The tower hears a warning.",
+                        "panels": [
+                            {
+                                "source_id": str(panel_id),
+                                "title": "The flare",
+                                "body": "Unsafe generated copy.",
+                                "location_id": None,
+                                "character_id": None,
+                            }
+                        ],
+                        "active_threads": [],
+                        "suggested_location_ids": [],
+                        "suggested_character_ids": [],
+                        "state": "published",
+                    },
+                },
+            )
+        )
+        database.commit()
+
+    message_page = client.get(
+        f"/lighthouse/runs/{run_id}/report?target_kind=message&target_id={message_id}"
+        f"&conversation_id={conversation_id}"
+    )
+    assert message_page.status_code == 200
+    assert "We do not attach hidden prompts" in message_page.text
+    assert str(message_id) in message_page.text
+
+    created = client.post(
+        f"/api/v1/runs/{run_id}/reports",
+        json={
+            "target_kind": "message",
+            "target_id": str(message_id),
+            "conversation_id": str(conversation_id),
+            "category": "unsafe",
+            "note": "  This crossed a boundary.  ",
+        },
+    )
+    assert created.status_code == 201
+    report = created.json()
+    assert report["note"] == "This crossed a boundary."
+    assert report["diagnostic_refs"] == {
+        "conversation_id": str(conversation_id),
+        "message_id": str(message_id),
+    }
+    assert "private text" not in str(report)
+
+    panel = client.post(
+        f"/api/v1/runs/{run_id}/reports",
+        json={
+            "target_kind": "recap_panel",
+            "target_id": str(panel_id),
+            "artifact_id": str(artifact_id),
+            "category": "confusing",
+            "note": "   ",
+        },
+    )
+    assert panel.status_code == 201
+    assert panel.json()["note"] is None
+    assert panel.json()["diagnostic_refs"]["panel_source_id"] == str(panel_id)
+    episode = client.post(
+        f"/api/v1/runs/{run_id}/reports",
+        json={
+            "target_kind": "episode",
+            "target_id": str(artifact_id),
+            "artifact_id": str(artifact_id),
+            "category": "continuity",
+        },
+    )
+    assert episode.status_code == 201
+    assert episode.json()["diagnostic_refs"] == {"artifact_id": str(artifact_id)}
+    assert (
+        client.post(
+            f"/api/v1/runs/{run_id}/reports",
+            json={
+                "target_kind": "episode",
+                "target_id": str(uuid4()),
+                "artifact_id": str(artifact_id),
+                "category": "other",
+            },
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/api/v1/runs/{run_id}/reports",
+            json={
+                "target_kind": "recap_panel",
+                "target_id": str(uuid4()),
+                "artifact_id": str(artifact_id),
+                "category": "other",
+            },
+        ).status_code
+        == 404
+    )
+
+    report_id = report["id"]
+    assert client.get(f"/api/v1/reports/{report_id}").status_code == 401
+    operator = client.get(
+        f"/api/v1/reports/{report_id}",
+        headers={"Authorization": "Bearer operator-secret"},
+    )
+    assert operator.status_code == 200
+    assert operator.json()["diagnostic_refs"]["message_id"] == str(message_id)
+    assert (
+        client.get(
+            f"/api/v1/reports/{uuid4()}", headers={"Authorization": "Bearer operator-secret"}
+        ).status_code
+        == 404
+    )
+    with factory() as database:
+        stored = database.get(NarrativeReportModel, UUID(report_id))
+        assert stored is not None
+        assert "private text" not in str(stored.diagnostic_refs)
+
+    episode_page = client.get(f"/lighthouse/runs/{run_id}/archive/{artifact_id}")
+    assert "Flag this episode" in episode_page.text
+    assert "Flag this panel" in episode_page.text
+
+
+def test_reports_reject_missing_foreign_or_private_targets(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    start_visitor_session(client)
+    base = f"/api/v1/runs/{run_id}/reports"
+    assert (
+        client.post(
+            base, json={"target_kind": "message", "target_id": str(uuid4()), "category": "other"}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            base, json={"target_kind": "episode", "target_id": str(uuid4()), "category": "other"}
+        ).status_code
+        == 422
+    )
+    missing = uuid4()
+    assert (
+        client.post(
+            base,
+            json={
+                "target_kind": "episode",
+                "target_id": str(missing),
+                "artifact_id": str(missing),
+                "category": "other",
+            },
+        ).status_code
+        == 404
+    )
+
+    private_id = uuid4()
+    with factory() as database:
+        database.add(
+            ArtifactModel(
+                id=private_id,
+                run_id=run_id,
+                kind="daily_recap",
+                title="Hidden",
+                body="Hidden",
+                generated_at=datetime.now(UTC),
+                source_ids=[],
+                payload={"visibility": "engine_only", "recap": {}},
+            )
+        )
+        database.commit()
+    assert (
+        client.post(
+            base,
+            json={
+                "target_kind": "episode",
+                "target_id": str(private_id),
+                "artifact_id": str(private_id),
+                "category": "other",
+            },
+        ).status_code
+        == 404
+    )
+
+    conversation_id = UUID(
+        client.post(f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}).json()[
+            "id"
+        ]
+    )
+    assert (
+        client.post(
+            base,
+            json={
+                "target_kind": "message",
+                "target_id": str(uuid4()),
+                "conversation_id": str(conversation_id),
+                "category": "other",
+            },
+        ).status_code
+        == 404
+    )
 
 
 def test_authentication_validation_and_not_found_errors(api) -> None:  # type: ignore[no-untyped-def]

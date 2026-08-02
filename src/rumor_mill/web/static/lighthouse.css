@@ -398,3 +398,29 @@ footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--
 @media (max-width: 360px) { h1 { font-size: 4rem; } .wordmark__beam { display: none; } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .rain { animation: none; } }
 @media (forced-colors: active) { .opening__art, .primary-action { border: 2px solid CanvasText; box-shadow: none; } .status-dot { forced-color-adjust: none; } }
+.report-signal {
+  display: block;
+  width: fit-content;
+  margin-top: .9rem;
+  color: var(--rust, #b64d36);
+  font: 700 .72rem/1.2 var(--sans, sans-serif);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.report-room { min-height: calc(100vh - 6rem); display: grid; place-items: center; padding: 3rem 1rem 5rem; background: radial-gradient(circle at 50% 15%, rgba(231, 138, 77, .12), transparent 26rem); }
+.report-card { width: min(100%, 42rem); position: relative; padding: clamp(1.5rem, 5vw, 3.5rem); background: #f3ead8; color: #152934; border: 1px solid rgba(21, 41, 52, .28); box-shadow: 10px 12px 0 rgba(0, 0, 0, .2); }
+.report-card h1 { max-width: 11ch; margin: .2rem 0 1rem; font-size: clamp(2.4rem, 8vw, 4.6rem); line-height: .9; }
+.report-intro { max-width: 34rem; font-size: 1.08rem; }
+.signal-flare { position: absolute; top: -1.4rem; right: 2rem; width: 3.4rem; height: 3.4rem; border: .55rem solid #f3ead8; border-radius: 50%; background: #d65a3a; box-shadow: 0 0 0 1px #d65a3a, 0 0 2.5rem rgba(214, 90, 58, .7); }
+.signal-flare span { display: block; width: .5rem; height: 1.5rem; margin: .4rem auto; border-radius: 1rem; background: #f8dd91; }
+.privacy-note { margin: 1.8rem 0; padding: 1rem 1.15rem; border-left: .35rem solid #d65a3a; background: rgba(255, 255, 255, .48); }
+.privacy-note p { margin: .25rem 0 0; }
+.report-card fieldset { display: grid; gap: .65rem; margin: 0 0 1.5rem; padding: 0; border: 0; }
+.report-card legend, .report-card > form > label { display: flex; justify-content: space-between; width: 100%; margin-bottom: .65rem; font-weight: 800; }
+.report-card label span { font-weight: 400; font-size: .8rem; }
+.report-card fieldset label { padding: .75rem .9rem; border: 1px solid rgba(21, 41, 52, .25); background: rgba(255, 255, 255, .35); }
+.report-card textarea { width: 100%; box-sizing: border-box; margin-bottom: 1rem; padding: .8rem; border: 1px solid #53636a; background: #fffdf6; font: inherit; }
+.report-receipt { padding: 1.5rem 0 .5rem; }
+.report-receipt h2 { font-size: clamp(2rem, 6vw, 3rem); }
+.report-receipt strong { overflow-wrap: anywhere; }

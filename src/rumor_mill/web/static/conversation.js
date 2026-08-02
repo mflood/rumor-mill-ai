@@ -14,6 +14,13 @@
     const label = message.kind === "action" ? "Action" : message.kind === "refusal" ? "Boundary" : message.kind === "hesitation" ? "Hesitation" : message.role === "visitor" ? "You" : "Reply";
     item.innerHTML = `<span>${label}</span><p></p>`;
     item.querySelector("p").textContent = message.content;
+    if (message.id) {
+      const report = document.createElement("a");
+      report.className = "report-signal";
+      report.textContent = "Flag this message";
+      report.href = `/lighthouse/runs/${room.dataset.runId}/report?target_kind=message&target_id=${message.id}&conversation_id=${id}`;
+      item.append(report);
+    }
     list.append(item);
     return item;
   };
@@ -23,6 +30,7 @@
     if (!response.ok) { status.textContent = "This private line is no longer available."; return; }
     const conversation = await response.json();
     list.replaceChildren();
+    room.dataset.runId = conversation.run_id;
     conversation.messages.forEach(render);
     list.lastElementChild?.scrollIntoView({ block: "end" });
   };

@@ -41,6 +41,7 @@ TABLES = {
     "visitor_character_states",
     "jobs",
     "artifacts",
+    "narrative_reports",
 }
 
 

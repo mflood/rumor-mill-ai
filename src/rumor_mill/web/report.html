@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#071a26">
+    <title>Send a signal — The Lighthouse</title>
+    <link rel="stylesheet" href="/static/lighthouse.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#report">Skip to report</a>
+    <header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock">Private signal</p></header>
+    <main class="report-room" id="report" data-run-id="{{ run_id }}" data-target-kind="{{ target_kind }}" data-target-id="{{ target_id }}" data-conversation-id="{{ conversation_id }}" data-artifact-id="{{ artifact_id }}">
+      <section class="report-card" aria-labelledby="report-title">
+        <div class="signal-flare" aria-hidden="true"><span></span></div>
+        <p class="eyebrow">Flag this {{ target_label }}</p>
+        <h1 id="report-title">Something broke the story?</h1>
+        <p class="report-intro">Tell the story team what felt confusing, unsafe, or out of continuity. You can leave the note blank.</p>
+        <aside class="privacy-note"><strong>What travels with this signal</strong><p>Only this item’s internal reference, its run, your category, and your note. We do not attach hidden prompts, private conversation text, or another visitor’s content.</p></aside>
+        <form id="report-form">
+          <fieldset><legend>What happened?</legend>
+            <label><input type="radio" name="category" value="confusing" required> It was confusing</label>
+            <label><input type="radio" name="category" value="unsafe"> It felt unsafe</label>
+            <label><input type="radio" name="category" value="continuity"> It broke continuity</label>
+            <label><input type="radio" name="category" value="other"> Something else</label>
+          </fieldset>
+          <label for="note">Optional note <span>Up to 1,000 characters</span></label>
+          <textarea id="note" maxlength="1000" rows="5" placeholder="What should the story team look at?"></textarea>
+          <button class="primary-action" type="submit">Send private signal <span aria-hidden="true">→</span></button>
+        </form>
+        <section class="report-receipt" id="report-receipt" hidden aria-live="polite"><p class="eyebrow">Signal received</p><h2>Thank you for marking the moment.</h2><p>The story team can find the related simulation item with report <strong id="report-id"></strong>. Your report does not reveal the story’s hidden machinery.</p><a href="/lighthouse">Return to The Lighthouse</a></section>
+        <p class="line-status" id="report-status" role="status"></p>
+      </section>
+    </main>
+    <script src="/static/report.js" defer></script>
+  </body>
+</html>
