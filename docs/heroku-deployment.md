@@ -30,9 +30,10 @@ heroku ps:scale web=1 worker=1 -a <app-name>
 ```
 
 Heroku's Python buildpack uses `pyproject.toml`, `uv.lock`, and `.python-version`. Heroku Postgres
-manages `DATABASE_URL`, including credential rotation; the app accepts it directly while retaining
-`RUMOR_MILL_DATABASE_URL` as the explicit local/test override. Do not copy either database URLs or
-API keys into source, logs, review apps, or support messages.
+manages `DATABASE_URL`, including credential rotation; both the app and Alembic release migration
+accept and normalize its `postgres://` URL directly while retaining `RUMOR_MILL_DATABASE_URL` as
+the explicit local/test override. Do not duplicate the managed URL into another config var, and do
+not copy database URLs or API keys into source, logs, review apps, or support messages.
 
 For a real model provider, replace fake mode without exposing the key:
 

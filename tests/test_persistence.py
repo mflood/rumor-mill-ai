@@ -135,22 +135,28 @@ def test_migration_upgrade_indexes_and_downgrade(tmp_path: Path) -> None:
 
 def test_explicit_migration_url_is_isolated_from_application_environment() -> None:
     test_url = "sqlite+pysqlite:///:memory:"
-    environment_url = "postgresql://application-database"
+    explicit_url = "postgresql://explicit-application-database"
+    managed_url = "postgres://heroku-managed-database"
 
-    assert resolve_migration_database_url(test_url, environment_url) == test_url
+    assert resolve_migration_database_url(test_url, explicit_url, managed_url) == test_url
     assert (
-        resolve_migration_database_url(DEFAULT_MIGRATION_DATABASE_URL, environment_url)
-        == environment_url
+        resolve_migration_database_url(DEFAULT_MIGRATION_DATABASE_URL, explicit_url, managed_url)
+        == "postgresql+psycopg://explicit-application-database"
     )
-    assert resolve_migration_database_url(DEFAULT_MIGRATION_DATABASE_URL, None) == (
+    assert (
+        resolve_migration_database_url(DEFAULT_MIGRATION_DATABASE_URL, None, managed_url)
+        == "postgresql+psycopg://heroku-managed-database"
+    )
+    assert resolve_migration_database_url(DEFAULT_MIGRATION_DATABASE_URL, None, None) == (
         DEFAULT_MIGRATION_DATABASE_URL
     )
 
 
 def test_database_engine_normalizes_postgres_driver() -> None:
-    engine = create_database_engine("postgresql://user:password@localhost/example")
-    assert engine.url.drivername == "postgresql+psycopg"
-    engine.dispose()
+    for scheme in ("postgres", "postgresql", "postgresql+psycopg"):
+        engine = create_database_engine(f"{scheme}://user:password@localhost/example")
+        assert engine.url.drivername == "postgresql+psycopg"
+        engine.dispose()
 
 
 def test_seed_and_repository_round_trip(
