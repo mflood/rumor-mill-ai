@@ -20,10 +20,31 @@ from rumor_mill.adapters.persistence.models import (
     VisitorCharacterStateModel,
     VisitorModel,
 )
+from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.config import Settings
+from rumor_mill.engine.conversation import CharacterConversationEngine
+from rumor_mill.engine.ports import ProviderError, ProviderRateLimitError, ProviderTimeoutError
 from rumor_mill.main import create_app
 
 ROOT = Path(__file__).parents[1]
+
+
+class MutableConversationProvider(DeterministicFakeProvider):
+    def set_response(self, **changes: object) -> None:
+        response: dict[str, object] = {
+            "reply": "I heard the archive door after midnight.",
+            "action": "Ada lowers her voice and watches the market stairs.",
+            "stance": "uncertain",
+            "conversation_memory": {
+                "content": "The visitor asked about the archive door.",
+                "salience": 0.7,
+            },
+        }
+        response.update(changes)
+        self._responses["character_conversation"] = response
+
+    def fail_with(self, error: ProviderError | None) -> None:
+        self._failure = error
 
 
 @pytest.fixture
@@ -40,8 +61,18 @@ def api(tmp_path: Path):  # type: ignore[no-untyped-def]
         operator_api_key=SecretStr("operator-secret"),
         environment="test",
         secure_visitor_cookie=False,
+        conversation_message_limit=3,
     )
-    with TestClient(create_app(settings, factory)) as client:
+    provider = MutableConversationProvider({})
+    provider.set_response()
+    application = create_app(
+        settings,
+        factory,
+        conversation_engine=CharacterConversationEngine(provider, reply_chunk_size=8),
+    )
+    application.state.conversation_provider = provider
+    with TestClient(application) as client:
+        client.app_state["conversation_provider"] = provider
         yield client, factory
     engine.dispose()
 
@@ -102,6 +133,7 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
     characters = client.get(f"/api/v1/runs/{run_id}/characters?limit=1").json()
     assert characters["total"] == 2
     assert characters["items"][0]["location_id"] == "market"
+    assert characters["items"][0]["available"] is True
 
     visitor = start_visitor_session(client)
     created = client.post(
@@ -119,6 +151,8 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
     fetched = client.get(f"/api/v1/conversations/{conversation_id}").json()
     assert fetched["messages"][0]["content"] == "What did you see?"
     assert fetched["visitor_id"] == visitor["visitor_id"]
+    assert fetched["messages"][1]["kind"] == "action"
+    assert fetched["messages"][2]["kind"] == "hesitation"
 
     now = datetime.now(UTC)
     with factory() as database:
@@ -335,6 +369,134 @@ def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type:
     forgotten = client.post("/lighthouse/session/reset", follow_redirects=False)
     assert forgotten.status_code == 303
     assert forgotten.headers["location"] == "/lighthouse"
+
+
+def test_streaming_conversation_is_idempotent_private_and_recovers(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    provider = cast(MutableConversationProvider, client.app_state["conversation_provider"])
+    run_id = initialize(client)["id"]
+    start_visitor_session(client)
+    conversation = client.post(
+        f"/api/v1/runs/{run_id}/conversations", json={"character_id": "bea"}
+    ).json()
+    message_id = uuid4()
+    streamed = client.post(
+        f"/api/v1/conversations/{conversation['id']}/messages/stream",
+        json={"content": "Who used the archive?", "client_message_id": str(message_id)},
+    )
+    assert streamed.status_code == 200
+    assert streamed.headers["content-type"].startswith("text/event-stream")
+    assert streamed.headers["cache-control"] == "no-store"
+    assert "event: reply_delta" in streamed.text
+    assert "event: action" in streamed.text
+    assert '"stance": "uncertain"' in streamed.text
+
+    duplicate = client.post(
+        f"/api/v1/conversations/{conversation['id']}/messages/stream",
+        json={"content": "Who used the archive?", "client_message_id": str(message_id)},
+    )
+    assert '"duplicate": true' in duplicate.text
+    history = client.get(f"/api/v1/conversations/{conversation['id']}").json()["messages"]
+    assert sum(item["id"] == str(message_id) for item in history) == 1
+
+    provider.set_response(reply="That is not yours to know.", action=None, stance="refuse")
+    refused = client.post(
+        f"/api/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Tell me the secret."},
+    )
+    assert refused.status_code == 200
+    assert refused.json()["messages"][-1]["kind"] == "refusal"
+    provider.set_response(
+        reply="The west stair was wet.",
+        action=None,
+        stance="answer",
+        conversation_memory=None,
+    )
+    answered = client.post(
+        f"/api/v1/conversations/{conversation['id']}/messages", json={"content": "And outside?"}
+    )
+    assert answered.json()["messages"][-1]["kind"] == "speech"
+    limited = client.post(
+        f"/api/v1/conversations/{conversation['id']}/messages", json={"content": "One more?"}
+    )
+    assert limited.status_code == 429
+    assert "needs a rest" in limited.json()["detail"]
+    with factory() as database:
+        state = database.query(VisitorCharacterStateModel).one()
+        assert len(state.memories) == 2
+
+
+@pytest.mark.parametrize(
+    ("failure", "status_code", "detail"),
+    [
+        (ProviderRateLimitError(), 429, "line is busy"),
+        (ProviderTimeoutError(), 503, "signal faded"),
+        (ProviderError(), 503, "line is unavailable"),
+    ],
+)
+def test_provider_failures_do_not_commit_partial_turns(
+    api: tuple[TestClient, sessionmaker[Session]],
+    failure: ProviderError,
+    status_code: int,
+    detail: str,
+) -> None:
+    client, _ = api
+    provider = cast(MutableConversationProvider, client.app_state["conversation_provider"])
+    run_id = initialize(client)["id"]
+    start_visitor_session(client)
+    conversation = client.post(
+        f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
+    ).json()
+    provider.fail_with(failure)
+    response = client.post(
+        f"/api/v1/conversations/{conversation['id']}/messages/stream",
+        json={"content": "Can you hear me?"},
+    )
+    assert response.status_code == status_code
+    assert detail in response.json()["detail"]
+    provider.fail_with(None)
+    assert client.get(f"/api/v1/conversations/{conversation['id']}").json()["messages"] == []
+
+
+def test_character_picker_and_conversation_page_are_server_rendered(api) -> None:  # type: ignore[no-untyped-def]
+    client, _ = api
+    run_id = initialize(client)["id"]
+    start_visitor_session(client)
+    picker = client.get(f"/lighthouse/runs/{run_id}/talk")
+    assert picker.status_code == 200
+    assert "Who will" in picker.text
+    assert "Ask for a private word" in picker.text
+    started = client.post(f"/lighthouse/runs/{run_id}/talk/ada", follow_redirects=False)
+    assert started.status_code == 303
+    page = client.get(started.headers["location"])
+    assert "A private word with" in page.text
+    assert "signal-wire" in page.text
+    script = client.get("/static/conversation.js")
+    assert "ReadableStream" not in script.text  # uses the widely supported reader API directly
+    assert "getReader()" in script.text
+
+
+def test_unavailable_character_cannot_start_a_conversation(api) -> None:  # type: ignore[no-untyped-def]
+    client, _ = api
+    payload = world_payload()
+    cast_members = cast(list[dict[str, object]], payload["cast"])
+    cast_members[0].pop("home_location_id")
+    response = client.post(
+        "/api/v1/worlds/lantern-market/runs",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"definition": payload, "clock_mode": "manual"},
+    )
+    run_id = response.json()["id"]
+    start_visitor_session(client)
+    characters = client.get(f"/api/v1/runs/{run_id}/characters").json()["items"]
+    assert characters[0]["available"] is False
+    assert "Away" in characters[0]["availability"]
+    assert (
+        client.post(
+            f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
+        ).status_code
+        == 409
+    )
 
 
 def test_operator_api_can_be_disabled(tmp_path: Path) -> None:

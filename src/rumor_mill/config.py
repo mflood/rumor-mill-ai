@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     openai_max_retries: int = Field(default=2, ge=0, le=10)
     visitor_session_days: int = Field(default=365, ge=1, le=730)
     secure_visitor_cookie: bool = True
+    conversation_message_limit: int = Field(default=50, ge=1, le=500)
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="RUMOR_MILL_", extra="ignore")
 

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>A private word with {{ character_name }} — The Lighthouse</title>
+    <link rel="stylesheet" href="/static/lighthouse.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#composer">Skip to your message</a>
+    <header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Private line</p></header>
+    <main class="radio-room" data-conversation-id="{{ conversation_id }}">
+      <header class="radio-room__heading"><p class="eyebrow">A private word with</p><h1>{{ character_name }}</h1><p>Only you and {{ character_name }} can read this exchange.</p></header>
+      <ol class="signal-wire" id="messages" aria-live="polite" aria-label="Conversation history"></ol>
+      <p class="line-status" id="line-status" role="status">The line is ready.</p>
+      <form class="dispatch-console" id="composer">
+        <label for="message">What do you ask?</label>
+        <textarea id="message" maxlength="4000" required rows="3"></textarea>
+        <div><span id="count">0 / 4000</span><button type="submit">Send across the line</button></div>
+      </form>
+    </main>
+    <script src="/static/conversation.js" defer></script>
+  </body>
+</html>
