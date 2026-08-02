@@ -25,7 +25,19 @@ make db-up
 make run
 ```
 
-The API is available at <http://127.0.0.1:8000>; `GET /health` returns its health status.
+By default, local Postgres is published on port `55432` and the API is available at
+<http://127.0.0.1:8787>; `GET /health` returns its health status. Both host ports are configurable
+in `.env`:
+
+```dotenv
+RUMOR_MILL_POSTGRES_PORT=55432
+RUMOR_MILL_API_PORT=8787
+RUMOR_MILL_DATABASE_URL=postgresql://rumor_mill:rumor_mill@localhost:55432/rumor_mill
+```
+
+When changing `RUMOR_MILL_POSTGRES_PORT`, update the port in `RUMOR_MILL_DATABASE_URL` to match.
+The container continues to listen internally on PostgreSQL's standard port; only the host port is
+changed. `make run`, Docker Compose, and the migration commands read these values from `.env`.
 
 ## Development
 
