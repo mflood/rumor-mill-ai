@@ -56,7 +56,7 @@ from rumor_mill.engine.ports import (
 )
 from rumor_mill.engine.recap import DailyRecap, RecapSource, build_daily_recap
 from rumor_mill.engine.scheduling import SimulationScheduler
-from rumor_mill.worlds.authoring import AuthoredLocation, WorldDefinition
+from rumor_mill.worlds.authoring import AuthoredCharacter, AuthoredLocation, WorldDefinition
 from rumor_mill.worlds.town_state import TownState
 
 T = TypeVar("T")
@@ -680,6 +680,159 @@ def create_app(
         if not any(item.id == location_id for item in world.locations):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "location not found")
         return HTMLResponse(town_document(run, world, database, selected_location_id=location_id))
+
+    def visitor_character_state(
+        database: Session, visitor_id: UUID, run_id: UUID, character_id: str
+    ) -> VisitorCharacterStateModel | None:
+        return database.scalar(
+            select(VisitorCharacterStateModel).where(
+                VisitorCharacterStateModel.visitor_id == visitor_id,
+                VisitorCharacterStateModel.run_id == run_id,
+                VisitorCharacterStateModel.character_id == character_id,
+            )
+        )
+
+    def appeared_in_public_recap(database: Session, run_id: UUID, character_id: str) -> bool:
+        recaps = database.scalars(
+            select(ArtifactModel).where(
+                ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap"
+            )
+        )
+        for artifact in recaps:
+            if artifact.payload.get("visibility", "public") != "public":
+                continue
+            recap = artifact.payload.get("recap", {})
+            suggested = recap.get("suggested_character_ids", [])
+            panels = recap.get("panels", [])
+            if character_id in suggested or any(
+                panel.get("character_id") == character_id for panel in panels
+            ):
+                return True
+        return False
+
+    def character_availability(
+        run: RunRecord, world: WorldDefinition, character: AuthoredCharacter
+    ) -> tuple[str, str | None]:
+        simulation_time = run.simulation_time or run.started_at
+        presence = next(
+            (
+                item
+                for item in TownState(world).public_presence(
+                    day=story_day(run), at=simulation_time.time()
+                )
+                if item.character_id == character.id
+            ),
+            None,
+        )
+        if presence is not None:
+            return f"At {presence.location_name} · {presence.activity}", presence.location_id
+        if character.home_location_id is None:
+            return "Whereabouts unknown", None
+        return "Away from public contact", character.home_location_id
+
+    def public_connections(world: WorldDefinition, character_id: str) -> list[AuthoredCharacter]:
+        connected_ids: set[str] = set()
+        for relationship in world.initial_relationships:
+            if relationship.visibility.value != "public":
+                continue
+            if relationship.source_character_id == character_id:
+                connected_ids.add(relationship.target_character_id)
+            if relationship.target_character_id == character_id:
+                connected_ids.add(relationship.source_character_id)
+        return [item for item in world.cast if item.id in connected_ids]
+
+    def profile_shell(run: RunRecord, title: str, content: str) -> str:
+        simulation_time = run.simulation_time or run.started_at
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(title)} — The Lighthouse</title><link rel="stylesheet" href="/static/lighthouse.css"></head>
+<body><a class="skip-link" href="#people">Skip to the cast</a>
+<header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {story_day(run)} <span aria-hidden="true">·</span> {simulation_time.strftime("%H:%M")}</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town">Town</a><a href="/lighthouse/runs/{run.id}/people" aria-current="page">People</a></nav></header>
+<main id="people" class="cast-ledger" tabindex="-1">{content}</main>
+<footer><p>Your cast ledger only records public facts and encounters from this visit.</p><p><span class="status-dot" aria-hidden="true"></span>Private to you</p></footer></body></html>"""
+
+    @app.get(
+        "/lighthouse/runs/{run_id}/people", response_class=HTMLResponse, include_in_schema=False
+    )
+    def cast_profiles(
+        run_id: UUID,
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
+        database: Annotated[Session, Depends(session)],
+    ) -> HTMLResponse:
+        run, world = load_run(run_id)
+        cards = []
+        for character in world.cast:
+            state_model = visitor_character_state(database, visitor.id, run_id, character.id)
+            recap_seen = appeared_in_public_recap(database, run_id, character.id)
+            availability, _ = character_availability(run, world, character)
+            note = (
+                state_model.relationship_summary
+                if state_model is not None
+                else (
+                    "Seen in a published dispatch. You have not spoken yet."
+                    if recap_seen
+                    else "Not yet encountered."
+                )
+            )
+            cards.append(
+                f"""<li class="ledger-card"><a href="/lighthouse/runs/{run.id}/people/{escape(character.id)}"><span class="ledger-card__initial" aria-hidden="true">{escape(character.name[0])}</span><span class="eyebrow">{escape(availability)}</span><h2>{escape(character.name)}</h2><p>{escape(character.description)}</p><span class="ledger-note">{escape(note)}</span></a></li>"""
+            )
+        content = f"""<header class="ledger-heading"><p class="eyebrow">Your cast ledger</p><h1>Who is<br>who?</h1><p>Public identities are printed in ink. Notes from your own encounters appear in the margins.</p></header><ul class="ledger-grid">{"".join(cards)}</ul>"""
+        return HTMLResponse(profile_shell(run, "People of Greyhaven", content))
+
+    @app.get(
+        "/lighthouse/runs/{run_id}/people/{character_id}",
+        response_class=HTMLResponse,
+        include_in_schema=False,
+    )
+    def character_profile(
+        run_id: UUID,
+        character_id: str,
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
+        database: Annotated[Session, Depends(session)],
+    ) -> HTMLResponse:
+        run, world = load_run(run_id)
+        character = next((item for item in world.cast if item.id == character_id), None)
+        if character is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "character not found")
+        state_model = visitor_character_state(database, visitor.id, run_id, character.id)
+        recap_seen = appeared_in_public_recap(database, run_id, character.id)
+        availability, location_id = character_availability(run, world, character)
+        connections = public_connections(world, character.id)
+        connections_markup = (
+            "".join(
+                f'<li><a href="/lighthouse/runs/{run.id}/people/{escape(item.id)}">{escape(item.name)}</a></li>'
+                for item in connections
+            )
+            or '<li class="quiet-note">No public connections recorded yet.</li>'
+        )
+        if state_model is not None:
+            memories = state_model.memories[-3:]
+            memory_markup = (
+                "".join(
+                    f"<li>{escape(str(item.get('content', 'A private exchange.')))}</li>"
+                    for item in memories
+                )
+                or '<li class="quiet-note">You opened a private line, but no lasting note was made.</li>'
+            )
+            relationship = state_model.relationship_summary
+        elif recap_seen:
+            relationship = "You know them from a published dispatch, but have not spoken."
+            memory_markup = '<li class="quiet-note">No private encounters yet.</li>'
+        else:
+            relationship = "You have not encountered this person yet."
+            memory_markup = '<li class="quiet-note">No private encounters yet.</li>'
+        location_markup = (
+            f'<a href="/lighthouse/runs/{run.id}/town/{escape(location_id)}">{escape(availability)}</a>'
+            if location_id is not None
+            else escape(availability)
+        )
+        talk_markup = (
+            f'<form action="/lighthouse/runs/{run.id}/talk/{escape(character.id)}" method="post"><button class="primary-action" type="submit">Ask for a private word <span aria-hidden="true">→</span></button></form>'
+            if character.home_location_id is not None
+            else '<p class="offline-note">A private line cannot be opened while their whereabouts are unknown.</p>'
+        )
+        content = f"""<article class="profile-file" aria-labelledby="profile-name"><a class="back-link" href="/lighthouse/runs/{run.id}/people">← Return to the cast ledger</a><header><div class="profile-monogram" aria-hidden="true">{escape(character.name[0])}</div><div><p class="eyebrow">Public character file</p><h1 id="profile-name">{escape(character.name)}</h1><p class="profile-bio">{escape(character.description)}</p></div></header><div class="profile-facts"><section><h2>Voice</h2><p>{escape(character.public_voice or "Their voice is not publicly known yet.")}</p></section><section><h2>Whereabouts</h2><p>{location_markup}</p></section><section><h2>Known connections</h2><ul>{connections_markup}</ul></section></div><aside class="margin-notes" aria-labelledby="notes-title"><p class="eyebrow">Written from your visit</p><h2 id="notes-title">What stands between you</h2><p class="relationship-cue">{escape(relationship)}</p><h3>Your remembered exchanges</h3><ul>{memory_markup}</ul></aside>{talk_markup}</article>"""
+        return HTMLResponse(profile_shell(run, character.name, content))
 
     def conversation_response(model: ConversationModel, visitor_id: UUID) -> ConversationResponse:
         return ConversationResponse(

@@ -272,6 +272,40 @@ footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--
 .location-panel h3 { margin: 0; font: 700 2rem/.95 var(--display); text-transform: uppercase; }
 .location-panel .eyebrow { color: #9d2c25; }
 
+/* Character profiles: a visitor's cast ledger, with earned notes in the margins. */
+.cast-ledger { max-width: var(--reading); margin: auto; padding: var(--space-4) var(--space-2); }
+.ledger-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, .55fr); align-items: end; gap: var(--space-3); padding-bottom: var(--space-4); }
+.ledger-heading .eyebrow { grid-column: 1 / -1; }
+.ledger-heading h1 { margin: 0; font-size: clamp(4.5rem, 10vw, 8.5rem); }
+.ledger-heading > p:last-child { margin-bottom: .8rem; color: var(--fog); font-size: 1.08rem; }
+.ledger-grid { margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: var(--space-2); list-style: none; }
+.ledger-card { min-height: 22rem; }
+.ledger-card > a { position: relative; height: 100%; padding: var(--space-2); display: flex; flex-direction: column; overflow: hidden; background: var(--paper); color: var(--ink); border-top: .45rem solid var(--signal); text-decoration: none; box-shadow: .45rem .45rem 0 var(--storm); }
+.ledger-card > a:hover, .ledger-card > a:focus-visible { background: var(--sun); transform: translateY(-.2rem); }
+.ledger-card__initial { position: absolute; right: -.1rem; top: -.7rem; color: rgb(7 26 38 / 8%); font: 700 11rem/.8 var(--display); }
+.ledger-card .eyebrow { position: relative; color: #9d2c25; }
+.ledger-card h2 { position: relative; max-width: 13rem; margin: auto 0 .75rem; font: 700 3rem/.86 var(--display); text-transform: uppercase; }
+.ledger-card p { position: relative; margin: 0 0 var(--space-2); }
+.ledger-note { position: relative; margin: auto -1rem -1rem; padding: 1rem; background: #e4cd8c; color: #4c3329; font: italic .9rem/1.35 var(--body); transform: rotate(-.6deg); }
+.profile-file { max-width: 68rem; margin: auto; }
+.profile-file > header { margin-top: var(--space-3); display: grid; grid-template-columns: minmax(10rem, .35fr) minmax(0, 1fr); gap: var(--space-3); align-items: end; }
+.profile-monogram { min-height: 18rem; display: grid; place-items: center; background: var(--storm); color: var(--sun); font: 700 clamp(9rem, 20vw, 16rem)/1 var(--display); border: .5rem solid var(--fog); box-shadow: .7rem .7rem 0 var(--signal); }
+.profile-file h1 { margin: 0; font-size: clamp(4.2rem, 10vw, 8rem); }
+.profile-bio { max-width: 34rem; color: var(--fog); font-size: 1.15rem; }
+.profile-facts { margin-top: var(--space-4); display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid rgb(215 226 223 / 25%); border-bottom: 1px solid rgb(215 226 223 / 25%); }
+.profile-facts section { min-height: 11rem; padding: var(--space-2); }
+.profile-facts section + section { border-left: 1px solid rgb(215 226 223 / 25%); }
+.profile-facts h2, .margin-notes h2 { margin: 0 0 1rem; color: var(--sun); font: 700 1.5rem var(--display); text-transform: uppercase; }
+.profile-facts ul { margin: 0; padding-left: 1.2rem; }
+.profile-facts a { color: var(--paper); text-underline-offset: .3rem; }
+.margin-notes { width: min(42rem, 92%); margin: var(--space-4) 0 var(--space-3) auto; padding: var(--space-3); background: #e4cd8c; color: #4c3329; box-shadow: -.8rem .8rem 0 var(--signal); transform: rotate(.35deg); }
+.margin-notes .eyebrow { color: #9d2c25; }
+.margin-notes h2 { color: #4c3329; font-size: clamp(2rem, 5vw, 3.4rem); }
+.margin-notes h3 { margin-top: var(--space-3); font: 700 .7rem var(--utility); letter-spacing: .08em; text-transform: uppercase; }
+.relationship-cue { font-size: 1.2rem; }
+.margin-notes li { margin-bottom: .65rem; }
+.offline-note { max-width: 36rem; padding: var(--space-2); border-left: .4rem solid var(--signal); color: var(--fog); }
+
 @keyframes weather { to { transform: translate3d(-2rem, 3rem, 0); } }
 @media (max-width: 700px) {
   .site-header { grid-template-columns: 1fr auto; gap: .5rem; }
@@ -305,6 +339,13 @@ footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--
   .chart-label { position: static; margin-bottom: var(--space-2); }
   .chart-key { position: static; margin-top: var(--space-2); }
   .place-file__grid { grid-template-columns: 1fr; }
+  .ledger-heading, .profile-file > header { grid-template-columns: 1fr; }
+  .ledger-heading .eyebrow { grid-column: auto; }
+  .ledger-heading h1 { font-size: clamp(4rem, 21vw, 6rem); }
+  .profile-monogram { min-height: 12rem; }
+  .profile-facts { grid-template-columns: 1fr; }
+  .profile-facts section + section { border-left: 0; border-top: 1px solid rgb(215 226 223 / 25%); }
+  .margin-notes { width: 100%; transform: none; }
   footer { flex-direction: column; }
 }
 @media (max-width: 360px) { h1 { font-size: 4rem; } .wordmark__beam { display: none; } }

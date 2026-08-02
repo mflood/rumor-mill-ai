@@ -8,13 +8,13 @@
     "content_rating": "Teen"
   },
   "cast": [
-    {"id": "mara", "name": "Mara Venn", "description": "Northlight's exacting keeper.", "home_location_id": "northlight"},
-    {"id": "elias", "name": "Elias Rook", "description": "A missing lighthouse apprentice."},
-    {"id": "tomas", "name": "Tomas Vale", "description": "Greyhaven's practical repairer.", "home_location_id": "net-loft"},
-    {"id": "iris", "name": "Iris Bell", "description": "The council chair balancing scarce resources.", "home_location_id": "council-rooms"},
-    {"id": "june", "name": "June Rook", "description": "Harbor dispatcher and Elias's sister.", "home_location_id": "harbor-dispatch"},
-    {"id": "nell", "name": "Nell Sayer", "description": "Captain of the grounded Mercy Jane.", "home_location_id": "breakwater-inn"},
-    {"id": "orin", "name": "Orin Pike", "description": "Retired keeper and island repairer.", "home_location_id": "orin-cottage"}
+    {"id": "mara", "name": "Mara Venn", "description": "Northlight's exacting keeper.", "home_location_id": "northlight", "public_voice": "Precise, spare, and grounded in times, duties, and physical conditions."},
+    {"id": "elias", "name": "Elias Rook", "description": "A missing lighthouse apprentice.", "public_voice": "Quick, curious clauses that think through cause and effect."},
+    {"id": "tomas", "name": "Tomas Vale", "description": "Greyhaven's practical repairer.", "home_location_id": "net-loft", "public_voice": "Workshop verbs, concrete nouns, and dry understatement."},
+    {"id": "iris", "name": "Iris Bell", "description": "The council chair balancing scarce resources.", "home_location_id": "council-rooms", "public_voice": "Balanced sentences that name tradeoffs before conclusions."},
+    {"id": "june", "name": "June Rook", "description": "Harbor dispatcher and Elias's sister.", "home_location_id": "harbor-dispatch", "public_voice": "Exact quotations, clipped questions, and deliberate repetition."},
+    {"id": "nell", "name": "Nell Sayer", "description": "Captain of the grounded Mercy Jane.", "home_location_id": "breakwater-inn", "public_voice": "Directional and sensory, with a navigator's refusal of euphemism."},
+    {"id": "orin", "name": "Orin Pike", "description": "Retired keeper and island repairer.", "home_location_id": "orin-cottage", "public_voice": "Patient stories anchored by a year, a tool, or a place."}
   ],
   "locations": [
     {"id": "northlight", "name": "Northlight Lighthouse", "description": "The dark lighthouse above Greyhaven.", "clue_ids": ["dark-lamp", "bypass-wire", "altered-log"], "presentation_copy": "Northlight works again above a headland still under inquiry."},

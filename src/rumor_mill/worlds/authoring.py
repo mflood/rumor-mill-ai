@@ -33,6 +33,7 @@ class AuthoredCharacter(AuthoringModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(min_length=1, max_length=2_000)
     home_location_id: Slug | None = None
+    public_voice: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 class AuthoredLocation(AuthoringModel):
