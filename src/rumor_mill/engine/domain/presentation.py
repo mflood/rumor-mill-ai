@@ -24,6 +24,7 @@ class ArtifactKind(StrEnum):
     STORY_CARD = "story_card"
     CHARACTER_UPDATE = "character_update"
     RUMOR_CARD = "rumor_card"
+    DAILY_RECAP = "daily_recap"
 
 
 class PresentationArtifact(ContractModel):

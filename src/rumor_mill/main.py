@@ -22,6 +22,7 @@ from rumor_mill.adapters.persistence import (
 from rumor_mill.adapters.persistence.models import ArtifactModel, ConversationModel
 from rumor_mill.config import Settings, get_settings
 from rumor_mill.engine.ports import ClockMode, RunRecord, RunStatus, WorldRecord
+from rumor_mill.engine.recap import DailyRecap, RecapSource, build_daily_recap
 from rumor_mill.engine.scheduling import SimulationScheduler
 from rumor_mill.worlds.authoring import WorldDefinition
 
@@ -142,6 +143,22 @@ class EpisodeResponse(ApiModel):
     generated_at: datetime
 
 
+class GenerateRecapRequest(ApiModel):
+    force: bool = False
+
+
+class EditRecapRequest(ApiModel):
+    headline: str = Field(min_length=1, max_length=200)
+    dek: str = Field(min_length=1, max_length=500)
+
+
+class DailyRecapResponse(ApiModel):
+    id: UUID
+    generated_at: datetime
+    edited: bool
+    recap: DailyRecap
+
+
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
@@ -211,6 +228,11 @@ def create_app(
     def lighthouse() -> HTMLResponse:
         """Render the public, server-first Lighthouse story shell."""
         return HTMLResponse((web_root / "lighthouse.html").read_text(encoding="utf-8"))
+
+    @app.get("/lighthouse/today", response_class=HTMLResponse, include_in_schema=False)
+    def lighthouse_today() -> HTMLResponse:
+        """Render the latest spoiler-safe daily briefing without requiring JavaScript."""
+        return HTMLResponse((web_root / "today.html").read_text(encoding="utf-8"))
 
     @app.get("/api/v1/health", response_model=HealthResponse, tags=["system"])
     def api_health(database: Annotated[Session, Depends(session)]) -> HealthResponse:
@@ -466,6 +488,129 @@ def create_app(
         return Page(
             items=records[offset : offset + limit], offset=offset, limit=limit, total=len(records)
         )
+
+    def recap_response(model: ArtifactModel) -> DailyRecapResponse:
+        return DailyRecapResponse(
+            id=model.id,
+            generated_at=_aware(model.generated_at),
+            edited=bool(model.payload.get("edited", False)),
+            recap=DailyRecap.model_validate(model.payload["recap"]),
+        )
+
+    def cached_recap(database: Session, run_id: UUID, story_date: str) -> ArtifactModel | None:
+        candidates = database.scalars(
+            select(ArtifactModel)
+            .where(ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap")
+            .order_by(ArtifactModel.generated_at.desc())
+        )
+        return next(
+            (
+                item
+                for item in candidates
+                if item.payload.get("recap", {}).get("story_date") == story_date
+            ),
+            None,
+        )
+
+    @app.get(
+        "/api/v1/runs/{run_id}/recaps/today",
+        response_model=DailyRecapResponse,
+        tags=["episodes"],
+    )
+    def today_recap(
+        run_id: UUID, database: Annotated[Session, Depends(session)]
+    ) -> DailyRecapResponse:
+        run, _ = load_run(run_id)
+        story_date = (run.simulation_time or run.started_at).date().isoformat()
+        model = cached_recap(database, run_id, story_date)
+        if model is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "today's recap has not been generated")
+        return recap_response(model)
+
+    @app.post(
+        "/api/v1/runs/{run_id}/recaps/daily",
+        response_model=DailyRecapResponse,
+        dependencies=[Depends(require_operator)],
+        tags=["episodes"],
+    )
+    def generate_daily_recap(
+        run_id: UUID,
+        request: GenerateRecapRequest,
+        database: Annotated[Session, Depends(session)],
+    ) -> DailyRecapResponse:
+        run, _ = load_run(run_id)
+        story_date = (run.simulation_time or run.started_at).date()
+        existing = cached_recap(database, run_id, story_date.isoformat())
+        if existing is not None and not request.force:
+            return recap_response(existing)
+
+        models = list(
+            database.scalars(
+                select(ArtifactModel)
+                .where(
+                    ArtifactModel.run_id == run_id,
+                    ArtifactModel.kind != "daily_recap",
+                )
+                .order_by(ArtifactModel.generated_at.desc())
+            )
+        )
+        sources = [
+            RecapSource(
+                id=item.id,
+                kind=item.kind,
+                title=item.title,
+                body=item.body,
+                generated_at=_aware(item.generated_at),
+                visibility=item.payload.get("visibility", "public"),
+                importance=item.payload.get("importance", 1),
+                location_id=item.payload.get("location_id"),
+                character_id=item.payload.get("character_id"),
+                active_thread=item.payload.get("active_thread"),
+            )
+            for item in models
+            if _aware(item.generated_at).date() == story_date
+        ]
+        recap = build_daily_recap(story_date, sources)
+        if existing is not None:
+            database.delete(existing)
+            database.flush()
+        model = ArtifactModel(
+            run_id=run_id,
+            kind="daily_recap",
+            title=recap.headline,
+            body=recap.dek,
+            generated_at=datetime.now(UTC),
+            source_ids=[str(panel.source_id) for panel in recap.panels],
+            payload=recap.artifact_payload(),
+        )
+        database.add(model)
+        database.commit()
+        database.refresh(model)
+        return recap_response(model)
+
+    @app.patch(
+        "/api/v1/recaps/{recap_id}",
+        response_model=DailyRecapResponse,
+        dependencies=[Depends(require_operator)],
+        tags=["episodes"],
+    )
+    def edit_daily_recap(
+        recap_id: UUID,
+        request: EditRecapRequest,
+        database: Annotated[Session, Depends(session)],
+    ) -> DailyRecapResponse:
+        model = database.get(ArtifactModel, recap_id)
+        if model is None or model.kind != "daily_recap":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "recap not found")
+        recap = DailyRecap.model_validate(model.payload["recap"]).model_copy(
+            update={"headline": request.headline, "dek": request.dek}
+        )
+        model.title = recap.headline
+        model.body = recap.dek
+        model.payload = {**recap.artifact_payload(), "edited": True}
+        database.commit()
+        database.refresh(model)
+        return recap_response(model)
 
     return app
 

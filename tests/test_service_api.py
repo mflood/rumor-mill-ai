@@ -147,6 +147,84 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
     assert schema["info"]["version"] == "1.0.0"
 
 
+def test_daily_recap_is_public_only_cached_and_operator_editable(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    assert client.get(f"/api/v1/runs/{run_id}/recaps/today").status_code == 404
+
+    now = datetime.now(UTC)
+    private_id = uuid4()
+    with factory() as database:
+        database.add_all(
+            [
+                ArtifactModel(
+                    id=uuid4(),
+                    run_id=run_id,
+                    kind="story_card",
+                    title="The skiff returned empty",
+                    body="Its harbor lamp was still warm.",
+                    generated_at=now,
+                    source_ids=[str(uuid4())],
+                    payload={
+                        "visibility": "public",
+                        "importance": 5,
+                        "location_id": "market",
+                        "character_id": "ada",
+                        "active_thread": "Where is the keeper?",
+                    },
+                ),
+                ArtifactModel(
+                    id=private_id,
+                    run_id=run_id,
+                    kind="story_card",
+                    title="Hidden motive",
+                    body="This must never be recapped.",
+                    generated_at=now,
+                    source_ids=[str(uuid4())],
+                    payload={"visibility": "engine_only", "importance": 5},
+                ),
+            ]
+        )
+        database.commit()
+
+    operator = {"Authorization": "Bearer operator-secret"}
+    generated = client.post(f"/api/v1/runs/{run_id}/recaps/daily", headers=operator, json={})
+    assert generated.status_code == 200
+    first = generated.json()
+    assert first["recap"]["headline"] == "The skiff returned empty"
+    assert "Hidden motive" not in generated.text
+
+    cached = client.post(f"/api/v1/runs/{run_id}/recaps/daily", headers=operator, json={}).json()
+    assert cached["id"] == first["id"]
+    assert client.get(f"/api/v1/runs/{run_id}/recaps/today").json()["id"] == first["id"]
+
+    forced = client.post(
+        f"/api/v1/runs/{run_id}/recaps/daily", headers=operator, json={"force": True}
+    ).json()
+    assert forced["id"] != first["id"]
+    edited = client.patch(
+        f"/api/v1/recaps/{forced['id']}",
+        headers=operator,
+        json={"headline": "Edited dispatch", "dek": "Reviewed by the story operator."},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["edited"] is True
+    assert edited.json()["recap"]["headline"] == "Edited dispatch"
+
+    missing = client.patch(
+        f"/api/v1/recaps/{uuid4()}",
+        headers=operator,
+        json={"headline": "No", "dek": "Missing"},
+    )
+    assert missing.status_code == 404
+    wrong_kind = client.patch(
+        f"/api/v1/recaps/{private_id}",
+        headers=operator,
+        json={"headline": "No", "dek": "Wrong kind"},
+    )
+    assert wrong_kind.status_code == 404
+
+
 def test_authentication_validation_and_not_found_errors(api) -> None:  # type: ignore[no-untyped-def]
     client, _ = api
     payload = {"definition": world_payload()}
