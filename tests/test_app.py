@@ -81,3 +81,23 @@ def test_lighthouse_visual_system_includes_accessibility_states() -> None:
         component in response.text
         for component in (".story-panel", ".portrait", ".town-card", ".dialogue")
     )
+
+
+def test_public_launch_metadata_assets_and_feedback_route() -> None:
+    with TestClient(app) as client:
+        for path in ("/lighthouse", "/lighthouse/today", "/lighthouse/town", "/lighthouse/archive"):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert 'property="og:title"' in response.text
+            assert 'property="og:image"' in response.text
+            assert 'name="twitter:card"' in response.text
+            assert 'rel="icon" href="/static/favicon.svg"' in response.text
+
+        favicon = client.get("/static/favicon.svg")
+        feedback = client.get("/lighthouse/feedback")
+
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"].startswith("image/svg+xml")
+    assert feedback.status_code == 200
+    assert "Share feedback on GitHub" in feedback.text
+    assert "SECURITY.md" in feedback.text
