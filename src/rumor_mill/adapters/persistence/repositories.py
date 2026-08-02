@@ -4,13 +4,23 @@ from datetime import UTC, datetime
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from rumor_mill.adapters.persistence.models import EventModel, JobModel, RunModel, WorldModel
-from rumor_mill.engine.domain import Event
+from rumor_mill.adapters.persistence.models import (
+    ArtifactModel,
+    ClaimModel,
+    EventModel,
+    JobModel,
+    MemoryModel,
+    RunModel,
+    SceneModel,
+    WorldModel,
+)
+from rumor_mill.engine.domain import Claim, Event, Memory, PresentationArtifact, Scene
 from rumor_mill.engine.ports import (
     ClockMode,
+    GeneratedSceneRecord,
     JobRecord,
     RunRecord,
     RunStatus,
@@ -152,6 +162,134 @@ class SqlAlchemyEventRepository:
         return None if model is None else Event.model_validate(model.payload)
 
 
+class SqlAlchemySceneRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add_generated(self, run_id: UUID, record: GeneratedSceneRecord) -> None:
+        scene_sequence = self._next_sequence(SceneModel, run_id)
+        event_sequence = self._next_sequence(EventModel, run_id)
+        self._session.add(
+            SceneModel(
+                id=record.scene.id,
+                run_id=run_id,
+                sequence=scene_sequence,
+                title=record.scene.title,
+                starts_at=record.scene.starts_at,
+                ends_at=record.scene.ends_at,
+                payload={
+                    "scene": record.scene.model_dump(mode="json"),
+                    "generation": record.generation,
+                },
+            )
+        )
+        self._session.add_all(
+            EventModel(
+                id=event.id,
+                run_id=run_id,
+                sequence=event_sequence + offset,
+                occurred_at=event.occurred_at,
+                summary=event.summary,
+                payload=event.model_dump(mode="json"),
+            )
+            for offset, event in enumerate(record.events)
+        )
+        self._session.add_all(
+            ClaimModel(
+                id=claim.id,
+                run_id=run_id,
+                statement=claim.statement,
+                visibility=claim.visibility.value,
+                payload=claim.model_dump(mode="json"),
+            )
+            for claim in record.claims
+        )
+        self._session.add_all(
+            MemoryModel(
+                id=memory.id,
+                run_id=run_id,
+                character_id=memory.character_id,
+                event_id=memory.source_event_id,
+                claim_id=memory.source_claim_id,
+                remembered_at=memory.remembered_at,
+                content=memory.content,
+                confidence=memory.confidence,
+                payload=memory.model_dump(mode="json"),
+            )
+            for memory in record.memories
+        )
+        self._session.add_all(
+            ArtifactModel(
+                id=artifact.id,
+                run_id=run_id,
+                scene_id=record.scene.id,
+                kind=artifact.kind.value,
+                title=artifact.title,
+                body=artifact.body,
+                generated_at=artifact.generated_at,
+                source_ids=[
+                    str(source_id)
+                    for source_id in (
+                        artifact.source_scene_ids
+                        + artifact.source_event_ids
+                        + artifact.source_claim_ids
+                    )
+                ],
+                payload=artifact.model_dump(mode="json"),
+            )
+            for artifact in record.artifacts
+        )
+
+    def get(self, scene_id: UUID) -> GeneratedSceneRecord | None:
+        model = self._session.get(SceneModel, scene_id)
+        if model is None:
+            return None
+        scene = Scene.model_validate(model.payload["scene"])
+        events = tuple(
+            Event.model_validate(item.payload)
+            for item in self._session.scalars(
+                select(EventModel)
+                .where(EventModel.run_id == model.run_id)
+                .where(EventModel.id.in_(scene.event_ids))
+                .order_by(EventModel.sequence)
+            )
+        )
+        claims = tuple(
+            Claim.model_validate(item.payload)
+            for item in self._session.scalars(
+                select(ClaimModel).where(ClaimModel.run_id == model.run_id)
+            )
+            if item.payload.get("provenance", {}).get("source_id") == str(scene_id)
+        )
+        memories = tuple(
+            Memory.model_validate(item.payload)
+            for item in self._session.scalars(
+                select(MemoryModel).where(MemoryModel.run_id == model.run_id)
+            )
+            if item.payload.get("provenance", {}).get("source_id") == str(scene_id)
+        )
+        artifacts = tuple(
+            PresentationArtifact.model_validate(item.payload)
+            for item in self._session.scalars(
+                select(ArtifactModel).where(ArtifactModel.scene_id == scene_id)
+            )
+        )
+        return GeneratedSceneRecord(
+            scene=scene,
+            events=events,
+            claims=claims,
+            memories=memories,
+            artifacts=artifacts,
+            generation=model.payload["generation"],
+        )
+
+    def _next_sequence(self, model: type[SceneModel] | type[EventModel], run_id: UUID) -> int:
+        current = self._session.scalar(
+            select(func.max(model.sequence)).where(model.run_id == run_id)
+        )
+        return 0 if current is None else current + 1
+
+
 class SqlAlchemyUnitOfWork:
     """One explicit SQLAlchemy transaction behind the engine unit-of-work port."""
 
@@ -161,6 +299,7 @@ class SqlAlchemyUnitOfWork:
         self.runs = SqlAlchemyRunRepository(self._session)
         self.events = SqlAlchemyEventRepository(self._session)
         self.jobs = SqlAlchemyJobRepository(self._session)
+        self.scenes = SqlAlchemySceneRepository(self._session)
         self._finished = False
 
     def __enter__(self) -> "SqlAlchemyUnitOfWork":
