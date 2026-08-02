@@ -1,11 +1,14 @@
 """FastAPI application entrypoint and stable simulation service API."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any, Generic, Literal, TypeVar
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -157,6 +160,8 @@ def create_app(
         version="1.0.0",
         description="Stable application-facing API for Rumor Mill simulations.",
     )
+    web_root = Path(__file__).with_name("web")
+    app.mount("/static", StaticFiles(directory=web_root / "static"), name="static")
     bearer = HTTPBearer(auto_error=False)
 
     def uow_factory() -> SqlAlchemyUnitOfWork:
@@ -201,6 +206,11 @@ def create_app(
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     async def health() -> HealthResponse:
         return HealthResponse(status="ok", environment=settings.environment)
+
+    @app.get("/lighthouse", response_class=HTMLResponse, include_in_schema=False)
+    def lighthouse() -> HTMLResponse:
+        """Render the public, server-first Lighthouse story shell."""
+        return HTMLResponse((web_root / "lighthouse.html").read_text(encoding="utf-8"))
 
     @app.get("/api/v1/health", response_model=HealthResponse, tags=["system"])
     def api_health(database: Annotated[Session, Depends(session)]) -> HealthResponse:
