@@ -47,6 +47,7 @@ TABLES = {
     "jobs",
     "artifacts",
     "narrative_reports",
+    "worker_heartbeats",
 }
 
 

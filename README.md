@@ -6,6 +6,9 @@ The MVP's system boundaries, data flow, and non-goals are documented in the
 [architecture overview](docs/architecture/README.md). Architectural decisions are recorded as
 [ADRs](docs/adr/README.md).
 
+Staging and production provisioning, release migrations, worker operation, smoke verification,
+and rollback are covered by the [Heroku deployment runbook](docs/heroku-deployment.md).
+
 Worlds are defined as validated, versioned JSON. See the
 [world-authoring format](docs/world-authoring-format.md) and its minimal fixture.
 

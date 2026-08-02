@@ -295,6 +295,13 @@ class JobModel(IdMixin, CreatedMixin, Base):
     )
 
 
+class WorkerHeartbeatModel(Base):
+    __tablename__ = "worker_heartbeats"
+
+    worker_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ArtifactModel(IdMixin, CreatedMixin, Base):
     __tablename__ = "artifacts"
 

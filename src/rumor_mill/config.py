@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,7 +11,10 @@ class Settings(BaseSettings):
 
     app_name: str = "Rumor Mill AI"
     environment: str = "development"
-    database_url: str = "postgresql://rumor_mill:rumor_mill@localhost:55432/rumor_mill"
+    database_url: str = Field(  # type: ignore[pydantic-alias]
+        default="postgresql://rumor_mill:rumor_mill@localhost:55432/rumor_mill",
+        validation_alias=AliasChoices("RUMOR_MILL_DATABASE_URL", "DATABASE_URL"),
+    )
     model_provider: str = "fake"
     operator_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
@@ -28,6 +31,8 @@ class Settings(BaseSettings):
     requests_per_minute: int = Field(default=120, ge=0)
     active_visitor_window_minutes: int = Field(default=15, ge=1)
     worker_stale_after_seconds: int = Field(default=600, ge=1)
+    worker_poll_seconds: float = Field(default=5.0, gt=0, le=300)
+    worker_run_batch_size: int = Field(default=100, ge=1, le=1_000)
     provider_health_required: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="RUMOR_MILL_", extra="ignore")
