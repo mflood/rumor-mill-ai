@@ -29,6 +29,7 @@ from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
     ConversationModel,
     EventModel,
+    NarrativeReportModel,
     VisitorCharacterStateModel,
     VisitorModel,
 )
@@ -202,6 +203,25 @@ class DailyRecapResponse(ApiModel):
     generated_at: datetime
     edited: bool
     recap: DailyRecap
+
+
+class CreateNarrativeReportRequest(ApiModel):
+    target_kind: Literal["message", "recap_panel", "episode"]
+    target_id: UUID
+    category: Literal["confusing", "unsafe", "continuity", "other"]
+    note: str | None = Field(default=None, max_length=1_000)
+    conversation_id: UUID | None = None
+    artifact_id: UUID | None = None
+
+
+class NarrativeReportResponse(ApiModel):
+    id: UUID
+    run_id: UUID
+    target_kind: Literal["message", "recap_panel", "episode"]
+    category: Literal["confusing", "unsafe", "continuity", "other"]
+    note: str | None
+    diagnostic_refs: dict[str, str]
+    created_at: datetime
 
 
 def _aware(value: datetime) -> datetime:
@@ -933,7 +953,7 @@ def create_app(
         recap = DailyRecap.model_validate(artifact.payload["recap"])
         panels = (
             "".join(
-                f'<article class="archive-panel"><p class="eyebrow">Panel {panel_index + 1:02}</p><h2>{escape(panel.title)}</h2><p>{escape(panel.body)}</p></article>'
+                f'<article class="archive-panel"><p class="eyebrow">Panel {panel_index + 1:02}</p><h2>{escape(panel.title)}</h2><p>{escape(panel.body)}</p><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=recap_panel&amp;target_id={panel.source_id}&amp;artifact_id={artifact.id}">Flag this panel</a></article>'
                 for panel_index, panel in enumerate(recap.panels)
             )
             or '<p class="archive-empty">This quiet-day dispatch contains no panels.</p>'
@@ -948,7 +968,7 @@ def create_app(
             if index + 1 < len(recaps)
             else "<span>You are caught up</span>"
         )
-        content = f"""<article class="episode-page" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={artifact.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{artifact.generated_at.isoformat()}">Published {artifact.generated_at.strftime("%H:%M UTC")}</time></header><section class="archive-panels" aria-label="Episode panels">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
+        content = f"""<article class="episode-page" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={artifact.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{artifact.generated_at.isoformat()}">Published {artifact.generated_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={artifact.id}&amp;artifact_id={artifact.id}">Flag this episode</a></header><section class="archive-panels" aria-label="Episode panels">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
         return HTMLResponse(
             archive_shell(
                 run,
@@ -958,6 +978,124 @@ def create_app(
                 content,
             )
         )
+
+    def report_response(model: NarrativeReportModel) -> NarrativeReportResponse:
+        return NarrativeReportResponse(
+            id=model.id,
+            run_id=model.run_id,
+            target_kind=model.target_kind,  # type: ignore[arg-type]
+            category=model.category,  # type: ignore[arg-type]
+            note=model.note,
+            diagnostic_refs=model.diagnostic_refs,
+            created_at=_aware(model.created_at),
+        )
+
+    def safe_report_refs(
+        request: CreateNarrativeReportRequest,
+        run_id: UUID,
+        visitor_id: UUID,
+        database: Session,
+    ) -> dict[str, str]:
+        if request.target_kind == "message":
+            if request.conversation_id is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY, "conversation_id is required"
+                )
+            conversation = owned_conversation(request.conversation_id, visitor_id, database)
+            if conversation.run_id != run_id or not any(
+                str(item.get("id")) == str(request.target_id) for item in conversation.transcript
+            ):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found")
+            return {"conversation_id": str(conversation.id), "message_id": str(request.target_id)}
+        if request.artifact_id is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "artifact_id is required")
+        artifact = database.get(ArtifactModel, request.artifact_id)
+        if (
+            artifact is None
+            or artifact.run_id != run_id
+            or artifact.kind != "daily_recap"
+            or artifact.payload.get("visibility", "public") != "public"
+            or "recap" not in artifact.payload
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "published artifact not found")
+        refs = {"artifact_id": str(artifact.id)}
+        if request.target_kind == "episode":
+            if request.target_id != artifact.id:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "episode not found")
+            return refs
+        recap = DailyRecap.model_validate(artifact.payload["recap"])
+        if not any(panel.source_id == request.target_id for panel in recap.panels):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "recap panel not found")
+        refs["panel_source_id"] = str(request.target_id)
+        return refs
+
+    @app.get(
+        "/lighthouse/runs/{run_id}/report",
+        response_class=HTMLResponse,
+        include_in_schema=False,
+    )
+    def narrative_report_page(
+        run_id: UUID,
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
+        target_kind: Literal["message", "recap_panel", "episode"],
+        target_id: UUID,
+        conversation_id: UUID | None = None,
+        artifact_id: UUID | None = None,
+    ) -> HTMLResponse:
+        load_run(run_id)
+        page = (web_root / "report.html").read_text(encoding="utf-8")
+        values = {
+            "{{ run_id }}": str(run_id),
+            "{{ target_kind }}": target_kind,
+            "{{ target_id }}": str(target_id),
+            "{{ conversation_id }}": str(conversation_id or ""),
+            "{{ artifact_id }}": str(artifact_id or ""),
+            "{{ target_label }}": target_kind.replace("_", " "),
+        }
+        for marker, value in values.items():
+            page = page.replace(marker, escape(value))
+        return HTMLResponse(page)
+
+    @app.post(
+        "/api/v1/runs/{run_id}/reports",
+        response_model=NarrativeReportResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["reports"],
+    )
+    def create_narrative_report(
+        run_id: UUID,
+        request: CreateNarrativeReportRequest,
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
+        database: Annotated[Session, Depends(session)],
+    ) -> NarrativeReportResponse:
+        load_run(run_id)
+        refs = safe_report_refs(request, run_id, visitor.id, database)
+        model = NarrativeReportModel(
+            run_id=run_id,
+            visitor_id=visitor.id,
+            target_kind=request.target_kind,
+            category=request.category,
+            note=request.note.strip() if request.note and request.note.strip() else None,
+            diagnostic_refs=refs,
+        )
+        database.add(model)
+        database.commit()
+        database.refresh(model)
+        return report_response(model)
+
+    @app.get(
+        "/api/v1/reports/{report_id}",
+        response_model=NarrativeReportResponse,
+        dependencies=[Depends(require_operator)],
+        tags=["reports"],
+    )
+    def get_narrative_report(
+        report_id: UUID, database: Annotated[Session, Depends(session)]
+    ) -> NarrativeReportResponse:
+        model = database.get(NarrativeReportModel, report_id)
+        if model is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
+        return report_response(model)
 
     def conversation_response(model: ConversationModel, visitor_id: UUID) -> ConversationResponse:
         return ConversationResponse(

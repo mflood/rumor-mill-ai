@@ -304,3 +304,28 @@ class ArtifactModel(IdMixin, CreatedMixin, Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
     __table_args__ = (Index("ix_artifacts_run_generated", "run_id", "generated_at"),)
+
+
+class NarrativeReportModel(IdMixin, CreatedMixin, Base):
+    __tablename__ = "narrative_reports"
+
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
+    visitor_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("visitors.id", ondelete="CASCADE"), nullable=False
+    )
+    target_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    category: Mapped[str] = mapped_column(String(20), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    diagnostic_refs: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "target_kind IN ('message','recap_panel','episode')", name="valid_target_kind"
+        ),
+        CheckConstraint(
+            "category IN ('confusing','unsafe','continuity','other')", name="valid_category"
+        ),
+        Index("ix_narrative_reports_run_created", "run_id", "created_at"),
+    )
