@@ -25,8 +25,12 @@ def test_lighthouse_shell_is_server_rendered_and_semantic() -> None:
     assert '<nav aria-label="Primary navigation">' in response.text
     assert 'href="#story">Skip to the story</a>' in response.text
     assert "The story continues while you are away" in response.text
-    assert "Enter and remember me" in response.text
-    assert "private, pseudonymous record" in response.text
+    assert "Enter Greyhaven" in response.text
+    assert "Read</strong> today’s public dispatch" in response.text
+    assert "Explore</strong> a location" in response.text
+    assert "question residents</strong> in private" in response.text
+    assert "Return later:" in response.text
+    assert "private visitor ledger" in response.text
 
 
 def test_lighthouse_entry_failure_disables_the_inert_entry_action() -> None:
@@ -34,8 +38,8 @@ def test_lighthouse_entry_failure_disables_the_inert_entry_action() -> None:
         response = client.get("/lighthouse?unavailable=true")
 
     assert response.status_code == 200
-    assert "No live story is available right now" in response.text
-    assert "Enter and remember me" not in response.text
+    assert "The current season is unavailable" in response.text
+    assert "Enter Greyhaven" not in response.text
 
 
 def test_today_page_uses_the_consistent_unavailable_state_without_a_selected_story() -> None:
@@ -44,7 +48,8 @@ def test_today_page_uses_the_consistent_unavailable_state_without_a_selected_sto
 
     assert response.status_code == 503
     assert '<main id="story-unavailable"' in response.text
-    assert "No live story is available right now" in response.text
+    assert "The current season is unavailable" in response.text
+    assert "saved conversations are safe" in response.text
     assert "Return to The Lighthouse" in response.text
 
 
@@ -55,7 +60,7 @@ def test_town_uses_the_consistent_unavailable_state_without_a_selected_story() -
     assert response.status_code == 503
     assert '<main id="story-unavailable"' in response.text
     assert 'role="status"' in response.text
-    assert "No live story is available right now" in response.text
+    assert "The current season is unavailable" in response.text
 
 
 def test_archive_uses_the_consistent_unavailable_state_without_a_selected_story() -> None:
@@ -64,7 +69,7 @@ def test_archive_uses_the_consistent_unavailable_state_without_a_selected_story(
 
     assert response.status_code == 503
     assert '<main id="story-unavailable"' in response.text
-    assert "No live story is available right now" in response.text
+    assert "The current season is unavailable" in response.text
     assert 'role="status"' in response.text
 
 
