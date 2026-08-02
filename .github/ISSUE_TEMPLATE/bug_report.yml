@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible problem in Rumor Mill AI
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Please remove secrets, personal data, and private story content before submitting.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: "1. Start with...\n2. Run...\n3. Observe..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Python version, provider type, and database type as relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: testing
+    attributes:
+      label: Test or evaluation evidence
+      description: Share the smallest failing test, eval, or sanitized log that demonstrates the bug.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for duplicates.
+          required: true
+        - label: I removed credentials, personal data, and confidential content.
+          required: true
+        - label: This is not a security vulnerability; I will report those using SECURITY.md.
+          required: true

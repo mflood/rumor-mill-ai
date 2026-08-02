@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a focused product, engine, authoring, or developer-experience improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: Who benefits, and what can they not do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the desired behavior, including alternatives you considered.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Tests and narrative evaluations
+      description: Explain how automated tests and, for narrative changes, deterministic evals could verify this.
+    validations:
+      required: true
+  - type: textarea
+    id: content
+    attributes:
+      label: Content provenance
+      description: If this includes world or generated content, describe its source, rights, AI tools, and human review.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and proposals.
+          required: true
+        - label: I have not included secrets, personal data, or content I lack rights to use.
+          required: true
