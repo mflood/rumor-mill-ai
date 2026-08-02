@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Rumor Mill AI"
     environment: str = "development"
-    database_url: str = "postgresql://rumor_mill:rumor_mill@localhost:5432/rumor_mill"
+    database_url: str = "postgresql://rumor_mill:rumor_mill@localhost:55432/rumor_mill"
     model_provider: str = "fake"
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.6-luna"

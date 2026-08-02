@@ -1,3 +1,9 @@
+-include .env
+
+RUMOR_MILL_API_PORT ?= 8787
+RUMOR_MILL_POSTGRES_PORT ?= 55432
+export RUMOR_MILL_API_PORT RUMOR_MILL_POSTGRES_PORT RUMOR_MILL_DATABASE_URL
+
 .PHONY: setup run test lint format ci db-up db-down db-migrate db-rollback
 
 setup:
@@ -5,7 +11,7 @@ setup:
 	uv run pre-commit install
 
 run:
-	uv run uvicorn rumor_mill.main:app --reload
+	uv run uvicorn rumor_mill.main:app --reload --port $(RUMOR_MILL_API_PORT)
 
 test:
 	uv run pytest
