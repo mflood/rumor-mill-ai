@@ -20,6 +20,7 @@ from rumor_mill.engine.ports import ClockMode, RunRecord, RunStatus, WorldRecord
 from rumor_mill.engine.scheduling import ScheduledWork, SimulationScheduler, SystemClock
 
 ROOT = Path(__file__).parents[1]
+pytestmark = pytest.mark.integration
 START = datetime(2026, 8, 2, 12, tzinfo=UTC)
 
 

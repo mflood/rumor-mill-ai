@@ -38,6 +38,7 @@ from rumor_mill.engine.scene_generation import (
 )
 
 ROOT = Path(__file__).parents[1]
+pytestmark = pytest.mark.integration
 NOW = datetime(2026, 8, 2, 13, tzinfo=UTC)
 DEFAULT_RUN_ID = UUID(int=2)
 

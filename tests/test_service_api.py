@@ -31,6 +31,7 @@ from rumor_mill.engine.ports import ProviderError, ProviderRateLimitError, Provi
 from rumor_mill.main import create_app
 
 ROOT = Path(__file__).parents[1]
+pytestmark = pytest.mark.integration
 
 
 class MutableConversationProvider(DeterministicFakeProvider):

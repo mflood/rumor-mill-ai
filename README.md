@@ -50,11 +50,21 @@ changed. `make run`, Docker Compose, and the migration commands read these value
 
 ```shell
 make test     # tests with coverage
+make test-unit        # fast domain and adapter isolation tests
+make test-integration # SQLite-backed API, scheduler, and migration tests
+make test-e2e         # complete returning-player lifecycle
+make test-parallel    # prove the full suite is process-isolated
 make lint     # Ruff and mypy
 make format   # apply formatting
 make ci       # all non-mutating CI checks
 make db-down  # stop local Postgres
 ```
+
+All default test paths use deterministic fakes, fixed seeds, and per-test temporary databases.
+They do not require network access and are safe to run concurrently. The optional Postgres contract
+test is enabled by setting `RUMOR_MILL_TEST_DATABASE_URL`; it remains excluded from the default
+integration lane when the variable is absent. See [the test strategy](docs/testing.md) for the
+coverage map and failure scenarios.
 
 ## Database migrations
 

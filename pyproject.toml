@@ -25,6 +25,7 @@ dev = [
   "pre-commit>=4.2.0,<5",
   "pytest>=8.4.1,<9",
   "pytest-cov>=6.2.1,<7",
+  "pytest-xdist>=3.8.0,<4",
   "ruff>=0.12.7,<1",
 ]
 
@@ -34,7 +35,11 @@ packages = ["src/rumor_mill"]
 [tool.pytest.ini_options]
 addopts = "--strict-markers --strict-config --cov=rumor_mill --cov-report=term-missing --cov-fail-under=100"
 testpaths = ["tests"]
-markers = ["postgres: integration tests requiring RUMOR_MILL_TEST_DATABASE_URL"]
+markers = [
+  "e2e: complete player journeys across HTTP, persistence, and presentation layers",
+  "integration: tests spanning multiple application or infrastructure boundaries",
+  "postgres: integration tests requiring RUMOR_MILL_TEST_DATABASE_URL",
+]
 
 [tool.coverage.run]
 branch = true
