@@ -37,6 +37,7 @@ class JobStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    DEAD = "dead"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,14 @@ class JobRecord:
     status: JobStatus
     scheduled_at: datetime
     payload: dict[str, Any]
+    attempts: int = 0
+    max_attempts: int = 5
+    available_at: datetime | None = None
+    lease_expires_at: datetime | None = None
+    locked_by: str | None = None
+    completed_at: datetime | None = None
+    error: str | None = None
+    result: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +124,26 @@ class RunRepository(Protocol):
 
 class JobRepository(Protocol):
     def add_once(self, job: JobRecord) -> bool: ...
+
+    def get(self, job_id: UUID) -> JobRecord | None: ...
+
+    def list(
+        self, *, status: JobStatus | None = None, limit: int = 100
+    ) -> tuple[JobRecord, ...]: ...
+
+    def claim_due(
+        self, *, worker_id: str, now: datetime, lease_until: datetime
+    ) -> JobRecord | None: ...
+
+    def complete(
+        self, job_id: UUID, *, worker_id: str, completed_at: datetime, result: dict[str, Any]
+    ) -> bool: ...
+
+    def fail(
+        self, job_id: UUID, *, worker_id: str, now: datetime, retry_at: datetime, error: str
+    ) -> JobRecord: ...
+
+    def retry(self, job_id: UUID, *, now: datetime) -> JobRecord: ...
 
 
 class EventRepository(Protocol):

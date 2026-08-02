@@ -2,9 +2,10 @@
 
 from datetime import UTC, datetime
 from types import TracebackType
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence.models import (
@@ -32,6 +33,7 @@ from rumor_mill.engine.ports import (
     ClockMode,
     GeneratedSceneRecord,
     JobRecord,
+    JobStatus,
     RunRecord,
     RunStatus,
     WorldRecord,
@@ -152,10 +154,155 @@ class SqlAlchemyJobRepository:
                 kind=job.kind,
                 status=job.status.value,
                 scheduled_at=job.scheduled_at,
+                available_at=job.available_at or job.scheduled_at,
                 payload=job.payload,
+                max_attempts=job.max_attempts,
             )
         )
         return True
+
+    def get(self, job_id: UUID) -> JobRecord | None:
+        return self._record(self._session.get(JobModel, job_id))
+
+    def list(self, *, status: JobStatus | None = None, limit: int = 100) -> tuple[JobRecord, ...]:
+        statement = select(JobModel).order_by(JobModel.created_at.desc()).limit(limit)
+        if status is not None:
+            statement = statement.where(JobModel.status == status.value)
+        return tuple(self._record(model) for model in self._session.scalars(statement))  # type: ignore[misc]
+
+    def claim_due(
+        self, *, worker_id: str, now: datetime, lease_until: datetime
+    ) -> JobRecord | None:
+        candidate_ids = self._session.scalars(
+            select(JobModel.id)
+            .where(
+                JobModel.available_at <= now,
+                or_(
+                    JobModel.status.in_((JobStatus.PENDING.value, JobStatus.FAILED.value)),
+                    (JobModel.status == JobStatus.RUNNING.value)
+                    & (JobModel.lease_expires_at <= now),
+                ),
+                JobModel.attempts < JobModel.max_attempts,
+            )
+            .order_by(JobModel.available_at, JobModel.created_at)
+            .limit(10)
+        )
+        for job_id in candidate_ids:
+            claimed = self._session.execute(
+                update(JobModel)
+                .where(
+                    JobModel.id == job_id,
+                    JobModel.available_at <= now,
+                    or_(
+                        JobModel.status.in_((JobStatus.PENDING.value, JobStatus.FAILED.value)),
+                        (JobModel.status == JobStatus.RUNNING.value)
+                        & (JobModel.lease_expires_at <= now),
+                    ),
+                    JobModel.attempts < JobModel.max_attempts,
+                )
+                .values(
+                    status=JobStatus.RUNNING.value,
+                    locked_at=now,
+                    lease_expires_at=lease_until,
+                    locked_by=worker_id,
+                    attempts=JobModel.attempts + 1,
+                    error=None,
+                )
+            )
+            claimed_rows = cast(int, getattr(claimed, "rowcount", 0))
+            if claimed_rows == 1:  # pragma: no branch - false only on a concurrent claim
+                self._session.flush()
+                return self.get(job_id)
+        return None
+
+    def complete(
+        self, job_id: UUID, *, worker_id: str, completed_at: datetime, result: dict[str, Any]
+    ) -> bool:
+        changed = self._session.execute(
+            update(JobModel)
+            .where(
+                JobModel.id == job_id,
+                JobModel.status == JobStatus.RUNNING.value,
+                JobModel.locked_by == worker_id,
+            )
+            .values(
+                status=JobStatus.COMPLETED.value,
+                completed_at=completed_at,
+                result=result,
+                locked_at=None,
+                locked_by=None,
+                lease_expires_at=None,
+                error=None,
+            )
+        )
+        return cast(int, getattr(changed, "rowcount", 0)) == 1
+
+    def fail(
+        self, job_id: UUID, *, worker_id: str, now: datetime, retry_at: datetime, error: str
+    ) -> JobRecord:
+        model = self._session.scalar(
+            select(JobModel)
+            .where(JobModel.id == job_id, JobModel.locked_by == worker_id)
+            .with_for_update()
+        )
+        if model is None or model.status != JobStatus.RUNNING.value:
+            raise ValueError("job is not leased by this worker")
+        exhausted = model.attempts >= model.max_attempts
+        model.status = JobStatus.DEAD.value if exhausted else JobStatus.FAILED.value
+        model.available_at = retry_at
+        model.error = error
+        model.locked_at = None
+        model.locked_by = None
+        model.lease_expires_at = None
+        self._session.flush()
+        record = self._record(model)
+        assert record is not None
+        return record
+
+    def retry(self, job_id: UUID, *, now: datetime) -> JobRecord:
+        model = self._session.scalar(
+            select(JobModel).where(JobModel.id == job_id).with_for_update()
+        )
+        if model is None:
+            raise LookupError(f"job {job_id} does not exist")
+        if model.status not in (JobStatus.FAILED.value, JobStatus.DEAD.value):
+            raise ValueError("only failed or dead jobs can be retried")
+        model.status = JobStatus.PENDING.value
+        model.available_at = now
+        model.attempts = 0
+        model.error = None
+        model.completed_at = None
+        model.result = None
+        self._session.flush()
+        record = self._record(model)
+        assert record is not None
+        return record
+
+    @staticmethod
+    def _record(model: JobModel | None) -> JobRecord | None:
+        if model is None:
+            return None
+
+        def aware(value: datetime | None) -> datetime | None:
+            return None if value is None else value.replace(tzinfo=UTC)
+
+        return JobRecord(
+            id=model.id,
+            run_id=model.run_id,
+            idempotency_key=model.idempotency_key,
+            kind=model.kind,
+            status=JobStatus(model.status),
+            scheduled_at=model.scheduled_at.replace(tzinfo=UTC),
+            payload=model.payload,
+            attempts=model.attempts,
+            max_attempts=model.max_attempts,
+            available_at=aware(model.available_at),
+            lease_expires_at=aware(model.lease_expires_at),
+            locked_by=model.locked_by,
+            completed_at=aware(model.completed_at),
+            error=model.error,
+            result=model.result,
+        )
 
 
 class SqlAlchemyEventRepository:
