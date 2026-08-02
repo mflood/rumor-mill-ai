@@ -2,6 +2,10 @@
 
 A living AI web-toon where characters keep secrets, spread rumors, and continue their lives while you're away.
 
+The MVP's system boundaries, data flow, and non-goals are documented in the
+[architecture overview](docs/architecture/README.md). Architectural decisions are recorded as
+[ADRs](docs/adr/README.md).
+
 ## Quick start
 
 Requirements: Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker, and Make.
