@@ -1,5 +1,11 @@
 # Repository instructions
 
+## GitHub interactions
+
+Use the authenticated `gh` CLI for all GitHub API interactions, including pull requests,
+issues, reviews, checks, releases, and repository metadata. Do not use a GitHub connector or
+app. Continue to use local `git` commands for branch, commit, and push operations.
+
 ## Linear issue workflow
 
 Whenever starting implementation of a new Linear issue:
