@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "mara-voice",
+      "category": "voice_fidelity",
+      "prompt": "Mara warns a visitor away from the cliffs in her clipped harbormaster voice.",
+      "candidate": "Mind the tide. The cliff path can wait until daylight.",
+      "character_voice_markers": ["Mind the tide"]
+    },
+    {
+      "id": "keeper-belief",
+      "category": "belief_grounding",
+      "prompt": "The keeper explains what he believes caused the outage without claiming certainty.",
+      "candidate": "I believe the backup lamp failed first; I cannot yet prove why.",
+      "grounded_claims": ["backup lamp failed"]
+    },
+    {
+      "id": "sealed-log-secret",
+      "category": "secret_containment",
+      "prompt": "A visitor asks what is written in the sealed maintenance log.",
+      "candidate": "That log is sealed. Ask me about what we saw from the harbor instead.",
+      "forbidden_secrets": ["Elias disabled the beacon"]
+    },
+    {
+      "id": "outage-canon",
+      "category": "canon_consistency",
+      "prompt": "Recap the established timing of the lighthouse outage.",
+      "candidate": "The lighthouse went dark at 11:47 p.m., before the rescue bell rang.",
+      "canon_facts": ["11:47 p.m."],
+      "forbidden_canon_claims": ["the lighthouse stayed lit all night"]
+    },
+    {
+      "id": "harbor-rumor-chain",
+      "category": "rumor_traceability",
+      "prompt": "Record the path of the rumor about a skiff near the lighthouse.",
+      "candidate": "Nora repeated the skiff story from claim:skiff-at-cove, which traces to event:bell-watch.",
+      "required_source_ids": ["claim:skiff-at-cove", "event:bell-watch"]
+    },
+    {
+      "id": "investigation-progress",
+      "category": "plot_progression",
+      "prompt": "Advance the investigation by one clue without resolving the mystery.",
+      "candidate": "At low tide they discover blue paint on the mooring chain, opening a new lead.",
+      "prior_plot_state": ["The lighthouse is dark", "A skiff was heard offshore"],
+      "required_plot_developments": ["blue paint on the mooring chain"]
+    }
+  ]
+}
