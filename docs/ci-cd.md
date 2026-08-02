@@ -14,7 +14,9 @@ pushes. Configure the GitHub `production` environment with any desired reviewer 
 
 Only a green `main` run reaches the `deploy` job. Production deployments never cancel one another.
 Heroku's release process applies migrations before promoting the new web and worker processes, and
-the workflow then verifies liveness, readiness, worker freshness, and a packaged static asset.
+the workflow then verifies infrastructure readiness independently from product readiness. Its
+playable smoke creates a visitor session, reaches Today through the real entry redirect, and opens
+at least one location or character destination.
 
 ## Failed migration
 
@@ -30,13 +32,23 @@ the workflow then verifies liveness, readiness, worker freshness, and a packaged
 
 ## Failed production smoke test
 
-1. The deployment has completed but is not verified. Stop further releases and inspect
+1. The deployment has completed but is not verified. Stop further releases. Check
+   `/health/ready` for infrastructure and `/health/product` for playability, then inspect
    `heroku ps -a <app-name>` plus web, worker, and release logs.
-2. If configuration or process health can be corrected safely, fix it and rerun
+2. Classify the failure before changing production:
+   - `missing_world` or `invalid_world`: the Lighthouse seed is absent or invalid; inspect the
+     release log and rerun the idempotent bootstrap after correcting the packaged definition.
+   - `no_running_season`: every Lighthouse run is paused or ended; inspect run status and resume
+     the intended season through the operator console, or rerun bootstrap if none exists.
+   - `/health/ready` reports `worker=degraded`: restore the worker dyno and verify a fresh heartbeat;
+     do not alter story data.
+   - `/health/ready` reports `provider=degraded`: correct provider configuration or availability;
+     do not create or resume runs to mask it.
+3. If configuration or process health can be corrected safely, fix it and rerun
    `uv run python scripts/smoke_deployment.py <production-url>`.
-3. Otherwise find the last verified release with `heroku releases -a <app-name>` and run
+4. Otherwise find the last verified release with `heroku releases -a <app-name>` and run
    `heroku rollback <release> -a <app-name>`.
-4. Watch the rollback release phase and rerun the smoke command. A rollback is complete only after
+5. Watch the rollback release phase and rerun the smoke command. A rollback is complete only after
    the smoke check passes.
 
 ## General rollback

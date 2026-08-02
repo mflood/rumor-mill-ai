@@ -8,8 +8,10 @@ Rumor Mill runs as three declared process types:
 - `worker` advances every running wall-clock simulation from durable Postgres state.
 
 The worker writes a heartbeat on every poll. `/health/live` confirms the web process is alive;
-`/health/ready` verifies Postgres, worker freshness, and required provider configuration. A dyno
-restart is safe: simulation time and the wall-time anchor are committed in Postgres, catch-up is
+`/health/ready` verifies Postgres, worker freshness, and required provider configuration without
+depending on story content. `/health/product` separately validates the Lighthouse world and
+requires a running season; it returns 503 with a low-cardinality `reason` when play is unavailable.
+A dyno restart is safe: simulation time and the wall-time anchor are committed in Postgres, catch-up is
 bounded by each run's `max_catch_up_ticks`, and scheduled jobs use unique idempotency keys.
 
 ## Provision a fresh app
@@ -52,8 +54,11 @@ uv run python scripts/smoke_deployment.py https://<app-name>.herokuapp.com
 heroku logs --tail -a <app-name>
 ```
 
-The smoke check requires liveness, readiness (including a recent worker heartbeat), and a packaged
-CSS asset. If release migrations fail, Heroku does not deploy the new release. Inspect the release
+The smoke check requires liveness, infrastructure readiness (including a recent worker heartbeat),
+product readiness, and packaged assets. It creates a visitor session, follows the entry redirect to
+Today, and opens a linked location or character page. If any playable check fails, the GitHub
+deployment job fails; follow the failed-smoke rollback procedure in `ci-cd.md`. If release
+migrations fail, Heroku does not deploy the new release. Inspect the release
 log, correct the migration or configuration, and redeploy; never bypass the release phase.
 
 Verify bootstrap independently after a release:

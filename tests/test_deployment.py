@@ -7,6 +7,7 @@ from types import TracebackType
 from typing import Self
 from uuid import UUID
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
@@ -18,7 +19,8 @@ from rumor_mill.adapters.persistence import (
     create_session_factory,
     seed_run,
 )
-from rumor_mill.adapters.persistence.models import RunModel, WorkerHeartbeatModel
+from rumor_mill.adapters.persistence.models import RunModel, WorkerHeartbeatModel, WorldModel
+from rumor_mill.bootstrap import _bootstrap_session
 from rumor_mill.config import Settings
 from rumor_mill.deployment import smoke
 from rumor_mill.engine.ports import RunRecord, RunStatus, WorldRecord
@@ -118,6 +120,65 @@ def test_production_readiness_requires_a_worker_heartbeat(tmp_path: Path) -> Non
     engine.dispose()
 
 
+def test_product_readiness_requires_valid_running_lighthouse_season(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'product-readiness.db'}"
+    engine = create_database_engine(url)
+    from rumor_mill.adapters.persistence.models import Base
+
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    client = TestClient(create_app(Settings(database_url=url), factory))
+
+    # Infrastructure remains ready even when the public product is not playable.
+    assert client.get("/health/ready").status_code == 200
+    missing = client.get("/health/product")
+    assert missing.status_code == 503
+    assert missing.json()["reason"] == "missing_world"
+
+    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    with factory.begin() as database:
+        result = _bootstrap_session(database, definition)
+    ready = client.get("/health/product")
+    assert ready.status_code == 200
+    assert ready.json()["playable_story_available"] is True
+    assert "rumor_mill_playable_story_available 1" in client.get("/metrics").text
+
+    with factory.begin() as database:
+        run = database.get(RunModel, result.run_id)
+        assert run is not None
+        run.status = "paused"
+    paused = client.get("/health/product")
+    assert paused.status_code == 503
+    assert paused.json()["reason"] == "no_running_season"
+    engine.dispose()
+
+
+@pytest.mark.parametrize("malformed", [True, False])
+def test_product_readiness_rejects_invalid_lighthouse_world(
+    tmp_path: Path, malformed: bool
+) -> None:
+    url = f"sqlite:///{tmp_path / f'invalid-{malformed}.db'}"
+    engine = create_database_engine(url)
+    from rumor_mill.adapters.persistence.models import Base
+
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    if malformed:
+        definition = {"schema_version": 1}
+    else:
+        overlapping = dict(definition["routines"][0])
+        overlapping["id"] = "overlapping-routine"
+        definition["routines"].append(overlapping)
+    with factory.begin() as database:
+        database.add(WorldModel(slug="lighthouse", schema_version=1, definition=definition))
+
+    response = TestClient(create_app(Settings(database_url=url), factory)).get("/health/product")
+    assert response.status_code == 503
+    assert response.json()["reason"] == "invalid_world"
+    engine.dispose()
+
+
 def test_worker_continues_after_run_and_poll_failures(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     url = f"sqlite:///{tmp_path / 'failures.db'}"
     config = Config(str(ROOT / "alembic.ini"))
@@ -190,9 +251,10 @@ def test_worker_entrypoint_configuration_and_identity(monkeypatch) -> None:  # t
 
 
 class FakeResponse:
-    def __init__(self, body: bytes, status: int = 200) -> None:
+    def __init__(self, body: bytes, status: int = 200, url: str = "") -> None:
         self.body = body
         self.status = status
+        self.url = url
 
     def __enter__(self) -> Self:
         return self
@@ -208,34 +270,43 @@ class FakeResponse:
     def read(self) -> bytes:
         return self.body
 
+    def geturl(self) -> str:
+        return self.url
+
 
 def test_deployment_smoke_checks_health_assets_and_public_pages() -> None:
     requested: list[str] = []
 
-    def open_fake(url: str, *, timeout: int) -> FakeResponse:
+    def open_fake(request: object, *, timeout: int) -> FakeResponse:
         assert timeout == 15
+        url = request.full_url if hasattr(request, "full_url") else str(request)
         requested.append(url)
-        if url.endswith(("/health/live", "/health/ready")):
+        if url.endswith(("/health/live", "/health/ready", "/health/product")):
             body = b'{"status":"ok"}'
         elif url.endswith("/lighthouse/feedback"):
             body = b"Share feedback on GitHub"
+        elif url.endswith("/lighthouse/session"):
+            return FakeResponse(
+                b'property="og:title" href="/lighthouse/runs/123/town/harbor"',
+                url="https://rumor.example/lighthouse/today",
+            )
         elif "/lighthouse" in url:
             body = b'property="og:title"'
         else:
             body = b"asset"
-        return FakeResponse(body)
+        return FakeResponse(body, url=url)
 
     smoke("https://rumor.example/", opener=open_fake)
     assert requested == [
         "https://rumor.example/health/live",
         "https://rumor.example/health/ready",
+        "https://rumor.example/health/product",
         "https://rumor.example/static/lighthouse.css",
         "https://rumor.example/static/favicon.svg",
         "https://rumor.example/lighthouse",
-        "https://rumor.example/lighthouse/today",
-        "https://rumor.example/lighthouse/town",
-        "https://rumor.example/lighthouse/archive",
         "https://rumor.example/lighthouse/feedback",
+        "https://rumor.example/lighthouse/session",
+        "https://rumor.example/lighthouse/runs/123/town/harbor",
     ]
 
 
@@ -243,11 +314,22 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
     def response(status: int, body: bytes) -> object:
         return FakeResponse(body, status)
 
+    healthy_prefix = [
+        response(200, b'{"status":"ok"}'),
+        response(200, b'{"status":"ok"}'),
+        response(200, b'{"status":"ok"}'),
+        response(200, b"css"),
+        response(200, b"svg"),
+        response(200, b'property="og:title"'),
+        response(200, b"Share feedback on GitHub"),
+    ]
+    playable_today = b'property="og:title" href="/lighthouse/runs/123/town/harbor"'
     for responses, message in (
         ([response(503, b"{}")], "/health/live returned HTTP 503"),
         ([response(200, b'{"status":"degraded"}')], "/health/live reported degraded"),
         (
             [
+                response(200, b'{"status":"ok"}'),
                 response(200, b'{"status":"ok"}'),
                 response(200, b'{"status":"ok"}'),
                 response(200, b""),
@@ -258,11 +340,38 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
             [
                 response(200, b'{"status":"ok"}'),
                 response(200, b'{"status":"ok"}'),
+                response(200, b'{"status":"ok"}'),
                 response(200, b"css"),
                 response(200, b"svg"),
                 response(200, b"missing metadata"),
             ],
             "/lighthouse public-page smoke check failed",
+        ),
+        (
+            [*healthy_prefix, FakeResponse(playable_today, url="https://rumor.example/lighthouse")],
+            "visitor entry did not redirect to /lighthouse/today",
+        ),
+        (
+            [
+                *healthy_prefix,
+                FakeResponse(b"missing metadata", url="https://rumor.example/lighthouse/today"),
+            ],
+            "/lighthouse/today playable-page smoke check failed",
+        ),
+        (
+            [
+                *healthy_prefix,
+                FakeResponse(b'property="og:title"', url="https://rumor.example/lighthouse/today"),
+            ],
+            "/lighthouse/today exposed no location or character destination",
+        ),
+        (
+            [
+                *healthy_prefix,
+                FakeResponse(playable_today, url="https://rumor.example/lighthouse/today"),
+                response(503, b""),
+            ],
+            "/lighthouse/runs/123/town/harbor playable destination smoke check failed",
         ),
     ):
         iterator = iter(responses)
