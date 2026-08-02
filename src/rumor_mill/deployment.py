@@ -7,7 +7,7 @@ from urllib.request import urlopen
 
 
 def smoke(base_url: str, opener: Callable[..., Any] = urlopen) -> None:
-    """Require healthy web/worker components and a packaged static asset."""
+    """Require healthy components and the complete public launch surface."""
     base_url = base_url.rstrip("/")
     for path in ("/health/live", "/health/ready"):
         with opener(f"{base_url}{path}", timeout=15) as response:
@@ -16,6 +16,17 @@ def smoke(base_url: str, opener: Callable[..., Any] = urlopen) -> None:
             payload = json.loads(response.read())
             if payload["status"] != "ok":
                 raise RuntimeError(f"{path} reported {payload['status']}")
-    with opener(f"{base_url}/static/lighthouse.css", timeout=15) as response:
-        if response.status != 200 or not response.read():
-            raise RuntimeError("static asset smoke check failed")
+    for path in ("/static/lighthouse.css", "/static/favicon.svg"):
+        with opener(f"{base_url}{path}", timeout=15) as response:
+            if response.status != 200 or not response.read():
+                raise RuntimeError(f"{path} static asset smoke check failed")
+    for path, marker in (
+        ("/lighthouse", b'property="og:title"'),
+        ("/lighthouse/today", b'property="og:title"'),
+        ("/lighthouse/town", b'property="og:title"'),
+        ("/lighthouse/archive", b'property="og:title"'),
+        ("/lighthouse/feedback", b"Share feedback on GitHub"),
+    ):
+        with opener(f"{base_url}{path}", timeout=15) as response:
+            if response.status != 200 or marker not in response.read():
+                raise RuntimeError(f"{path} public-page smoke check failed")

@@ -7,7 +7,8 @@ their own beliefs, memories, relationships, and incomplete version of events.
 [Play The Lighthouse](https://rumormill-5e6f53c74e73.herokuapp.com/lighthouse) ·
 [Read the architecture](docs/architecture/README.md) ·
 [Author a world](docs/world-authoring-format.md) ·
-[Contribute](CONTRIBUTING.md)
+[Contribute](CONTRIBUTING.md) ·
+[Send feedback](https://rumormill-5e6f53c74e73.herokuapp.com/lighthouse/feedback)
 
 ![The Lighthouse opening screen](docs/images/lighthouse-demo.jpg)
 
@@ -157,6 +158,7 @@ failure scenarios.
 - [Narrative evaluations](docs/narrative-evaluations.md)
 - [Privacy and retention](docs/security/privacy-and-retention.md)
 - [Heroku deployment and operations](docs/heroku-deployment.md)
+- [Public MVP launch checklist](docs/launch-checklist.md)
 
 ## Community and license
 

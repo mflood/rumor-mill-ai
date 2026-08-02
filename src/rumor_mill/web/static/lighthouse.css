@@ -161,6 +161,12 @@ h1 em { color: var(--signal); font-weight: 700; }
 .dispatch h2 { max-width: 42rem; margin: 0; font-size: clamp(3rem, 7vw, 6rem); letter-spacing: -.035em; }
 .dispatch > p { max-width: 30rem; margin: auto 0 0; padding-top: var(--space-2); border-top: .35rem solid var(--signal); font-size: 1.05rem; }
 footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--space-2); display: flex; justify-content: space-between; gap: 1rem; color: var(--fog); font: .65rem var(--utility); text-transform: uppercase; }
+footer a { text-underline-offset: .25rem; }
+.feedback-room { min-height: calc(100svh - 5rem); display: grid; place-items: center; padding: var(--space-4) var(--space-2); }
+.feedback-card { width: min(100%, 52rem); padding: var(--space-3); background: var(--deep-water); border: 1px solid rgb(215 226 223 / 28%); box-shadow: .65rem .65rem 0 var(--signal); }
+.feedback-card h1 { margin: 0 0 var(--space-2); font-size: clamp(4rem, 10vw, 8rem); }
+.feedback-card > p:not(.eyebrow) { max-width: 42rem; }
+.feedback-note { margin: var(--space-3) 0; padding-left: var(--space-2); border-left: .35rem solid var(--sun); color: var(--fog); }
 
 /* Today: a vertical dispatch ribbon, read top-to-bottom like a web-toon. */
 .today { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--space-2) var(--space-4); }

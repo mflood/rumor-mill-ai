@@ -209,13 +209,20 @@ class FakeResponse:
         return self.body
 
 
-def test_deployment_smoke_checks_health_readiness_and_static_asset() -> None:
+def test_deployment_smoke_checks_health_assets_and_public_pages() -> None:
     requested: list[str] = []
 
     def open_fake(url: str, *, timeout: int) -> FakeResponse:
         assert timeout == 15
         requested.append(url)
-        body = b"body{}" if url.endswith(".css") else b'{"status":"ok"}'
+        if url.endswith(("/health/live", "/health/ready")):
+            body = b'{"status":"ok"}'
+        elif url.endswith("/lighthouse/feedback"):
+            body = b"Share feedback on GitHub"
+        elif "/lighthouse" in url:
+            body = b'property="og:title"'
+        else:
+            body = b"asset"
         return FakeResponse(body)
 
     smoke("https://rumor.example/", opener=open_fake)
@@ -223,6 +230,12 @@ def test_deployment_smoke_checks_health_readiness_and_static_asset() -> None:
         "https://rumor.example/health/live",
         "https://rumor.example/health/ready",
         "https://rumor.example/static/lighthouse.css",
+        "https://rumor.example/static/favicon.svg",
+        "https://rumor.example/lighthouse",
+        "https://rumor.example/lighthouse/today",
+        "https://rumor.example/lighthouse/town",
+        "https://rumor.example/lighthouse/archive",
+        "https://rumor.example/lighthouse/feedback",
     ]
 
 
@@ -239,7 +252,17 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
                 response(200, b'{"status":"ok"}'),
                 response(200, b""),
             ],
-            "static asset smoke check failed",
+            "/static/lighthouse.css static asset smoke check failed",
+        ),
+        (
+            [
+                response(200, b'{"status":"ok"}'),
+                response(200, b'{"status":"ok"}'),
+                response(200, b"css"),
+                response(200, b"svg"),
+                response(200, b"missing metadata"),
+            ],
+            "/lighthouse public-page smoke check failed",
         ),
     ):
         iterator = iter(responses)
