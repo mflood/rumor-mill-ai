@@ -64,6 +64,12 @@ class RunModel(IdMixin, Base):
     seed: Mapped[int] = mapped_column(Integer, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    clock_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="wall")
+    simulation_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    wall_time_anchor: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    clock_rate: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False, default=1)
+    tick_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    max_catch_up_ticks: Mapped[int] = mapped_column(Integer, nullable=False, default=12)
 
     __table_args__ = (
         CheckConstraint(
@@ -71,6 +77,10 @@ class RunModel(IdMixin, Base):
             name="valid_status",
         ),
         CheckConstraint("ended_at IS NULL OR ended_at >= started_at", name="valid_times"),
+        CheckConstraint("clock_mode IN ('wall','paused','manual')", name="valid_clock_mode"),
+        CheckConstraint("clock_rate > 0", name="positive_clock_rate"),
+        CheckConstraint("tick_seconds > 0", name="positive_tick_seconds"),
+        CheckConstraint("max_catch_up_ticks > 0", name="positive_max_catch_up_ticks"),
         Index("ix_runs_world_status", "world_id", "status"),
     )
 
