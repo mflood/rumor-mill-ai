@@ -29,42 +29,43 @@ def test_lighthouse_shell_is_server_rendered_and_semantic() -> None:
     assert "private, pseudonymous record" in response.text
 
 
-def test_today_page_is_a_server_rendered_one_minute_briefing() -> None:
+def test_lighthouse_entry_failure_disables_the_inert_entry_action() -> None:
+    with TestClient(app) as client:
+        response = client.get("/lighthouse?unavailable=true")
+
+    assert response.status_code == 200
+    assert "No live story is available right now" in response.text
+    assert "Enter and remember me" not in response.text
+
+
+def test_today_page_uses_the_consistent_unavailable_state_without_a_selected_story() -> None:
     with TestClient(app) as client:
         response = client.get("/lighthouse/today")
 
-    assert response.status_code == 200
-    assert '<main id="today"' in response.text
-    assert "Threads to follow" in response.text
-    assert "Since your last visit" in response.text
-    assert "A dispatch could not be prepared" in response.text
-    assert "Explore the harbor" in response.text
-    assert "Forget this visit" in response.text
+    assert response.status_code == 503
+    assert '<main id="story-unavailable"' in response.text
+    assert "No live story is available right now" in response.text
+    assert "Return to The Lighthouse" in response.text
 
 
-def test_town_fallback_is_navigable_without_live_state_or_map_imagery() -> None:
+def test_town_uses_the_consistent_unavailable_state_without_a_selected_story() -> None:
     with TestClient(app) as client:
         response = client.get("/lighthouse/town")
 
-    assert response.status_code == 200
-    assert '<main id="town"' in response.text
+    assert response.status_code == 503
+    assert '<main id="story-unavailable"' in response.text
     assert 'role="status"' in response.text
-    assert "The live town signal is unavailable" in response.text
-    assert "Northlight Lighthouse" in response.text
-    assert "Orin’s Cottage" in response.text
-    assert '<nav class="island-chart" aria-label="Greyhaven locations">' in response.text
+    assert "No live story is available right now" in response.text
 
 
-def test_archive_fallback_explains_publication_and_spoiler_boundaries() -> None:
+def test_archive_uses_the_consistent_unavailable_state_without_a_selected_story() -> None:
     with TestClient(app) as client:
         response = client.get("/lighthouse/archive")
 
-    assert response.status_code == 200
-    assert '<main id="archive"' in response.text
-    assert "Previously," in response.text
-    assert "Hidden canon and private conversations never enter this binding" in response.text
+    assert response.status_code == 503
+    assert '<main id="story-unavailable"' in response.text
+    assert "No live story is available right now" in response.text
     assert 'role="status"' in response.text
-    assert 'property="og:title"' in response.text
 
 
 def test_lighthouse_visual_system_includes_accessibility_states() -> None:
@@ -87,7 +88,7 @@ def test_public_launch_metadata_assets_and_feedback_route() -> None:
     with TestClient(app) as client:
         for path in ("/lighthouse", "/lighthouse/today", "/lighthouse/town", "/lighthouse/archive"):
             response = client.get(path)
-            assert response.status_code == 200
+            assert response.status_code in {200, 503}
             assert 'property="og:title"' in response.text
             assert 'property="og:image"' in response.text
             assert 'name="twitter:card"' in response.text
