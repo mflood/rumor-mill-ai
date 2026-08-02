@@ -17,6 +17,7 @@ from rumor_mill.adapters.persistence import create_database_engine, create_sessi
 from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
     Base,
+    EventModel,
     VisitorCharacterStateModel,
     VisitorModel,
 )
@@ -158,6 +159,22 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
     with factory() as database:
         database.add_all(
             [
+                EventModel(
+                    id=uuid4(),
+                    run_id=UUID(str(run_id)),
+                    sequence=1,
+                    occurred_at=now,
+                    summary="Ada opened the market shutters.",
+                    payload={"visibility": "public", "location_id": "market"},
+                ),
+                EventModel(
+                    id=uuid4(),
+                    run_id=UUID(str(run_id)),
+                    sequence=2,
+                    occurred_at=now,
+                    summary="A private exchange took place.",
+                    payload={"visibility": "engine_only", "location_id": "market"},
+                ),
                 ArtifactModel(
                     id=uuid4(),
                     run_id=UUID(str(run_id)),
@@ -166,7 +183,7 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
                     body="The market wakes.",
                     generated_at=now,
                     source_ids=[str(uuid4())],
-                    payload={"visibility": "public"},
+                    payload={"visibility": "public", "location_id": "market"},
                 ),
                 ArtifactModel(
                     id=uuid4(),
@@ -181,6 +198,20 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
             ]
         )
         database.commit()
+
+    town_page = client.get(f"/lighthouse/runs/{run_id}/town")
+    assert town_page.status_code == 200
+    assert "Lantern Market" in town_page.text
+    assert "No one publicly present" in town_page.text
+    assert "Positions only show public activity" in town_page.text
+    location_page = client.get(f"/lighthouse/runs/{run_id}/town/market")
+    assert location_page.status_code == 200
+    assert "Ada opened the market shutters" in location_page.text
+    assert "The market wakes" in location_page.text
+    assert "A private exchange took place" not in location_page.text
+    assert "Not for visitors" not in location_page.text
+    assert client.get(f"/lighthouse/runs/{run_id}/town/unknown").status_code == 404
+
     episodes = client.get(f"/api/v1/runs/{run_id}/episodes?limit=1").json()
     assert episodes["total"] == 1
     assert episodes["items"][0]["title"] == "Morning"

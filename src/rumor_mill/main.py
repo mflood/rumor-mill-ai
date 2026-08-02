@@ -1,5 +1,7 @@
 """FastAPI application entrypoint and stable simulation service API."""
 
+# ruff: noqa: E501 -- semantic server-rendered HTML is kept readable in its document shape.
+
 import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -26,6 +28,7 @@ from rumor_mill.adapters.persistence import (
 from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
     ConversationModel,
+    EventModel,
     VisitorCharacterStateModel,
     VisitorModel,
 )
@@ -53,7 +56,8 @@ from rumor_mill.engine.ports import (
 )
 from rumor_mill.engine.recap import DailyRecap, RecapSource, build_daily_recap
 from rumor_mill.engine.scheduling import SimulationScheduler
-from rumor_mill.worlds.authoring import WorldDefinition
+from rumor_mill.worlds.authoring import AuthoredLocation, WorldDefinition
+from rumor_mill.worlds.town_state import TownState
 
 T = TypeVar("T")
 
@@ -326,6 +330,11 @@ def create_app(
         """Render the latest spoiler-safe daily briefing without requiring JavaScript."""
         return HTMLResponse((web_root / "today.html").read_text(encoding="utf-8"))
 
+    @app.get("/lighthouse/town", response_class=HTMLResponse, include_in_schema=False)
+    def lighthouse_town() -> HTMLResponse:
+        """Render an authored, useful town map when no live run has been selected."""
+        return HTMLResponse((web_root / "town.html").read_text(encoding="utf-8"))
+
     @app.post("/lighthouse/session", include_in_schema=False)
     def enter_lighthouse(database: Annotated[Session, Depends(session)]) -> RedirectResponse:
         response = RedirectResponse("/lighthouse/today", status_code=status.HTTP_303_SEE_OTHER)
@@ -524,6 +533,153 @@ def create_app(
         return Page(
             items=records[offset : offset + limit], offset=offset, limit=limit, total=len(records)
         )
+
+    def story_day(run: RunRecord) -> int:
+        simulation_time = run.simulation_time or run.started_at
+        return max(1, min(14, (simulation_time.date() - run.started_at.date()).days + 1))
+
+    def public_location_events(
+        database: Session, run_id: UUID, location_id: str, *, limit: int = 3
+    ) -> list[EventModel]:
+        candidates = database.scalars(
+            select(EventModel)
+            .where(EventModel.run_id == run_id)
+            .order_by(EventModel.occurred_at.desc(), EventModel.sequence.desc())
+        )
+        return [
+            item
+            for item in candidates
+            if item.payload.get("visibility", "public") == "public"
+            and item.payload.get("location_id") == location_id
+        ][:limit]
+
+    def public_location_panels(
+        database: Session, run_id: UUID, location_id: str, *, limit: int = 3
+    ) -> list[ArtifactModel]:
+        candidates = database.scalars(
+            select(ArtifactModel)
+            .where(ArtifactModel.run_id == run_id)
+            .order_by(ArtifactModel.generated_at.desc(), ArtifactModel.id)
+        )
+        return [
+            item
+            for item in candidates
+            if item.payload.get("visibility", "public") == "public"
+            and item.payload.get("location_id") == location_id
+        ][:limit]
+
+    def town_document(
+        run: RunRecord,
+        world: WorldDefinition,
+        database: Session,
+        *,
+        selected_location_id: str | None = None,
+    ) -> str:
+        simulation_time = run.simulation_time or run.started_at
+        day = story_day(run)
+        town_state = TownState(world)
+        presences = town_state.public_presence(day=day, at=simulation_time.time())
+        by_location = {
+            location.id: [item for item in presences if item.location_id == location.id]
+            for location in world.locations
+        }
+
+        def map_stop(index: int, location: AuthoredLocation) -> str:
+            current = 'aria-current="location"' if location.id == selected_location_id else ""
+            presence = by_location[location.id]
+            public_name = presence[0].character_name if presence else "No one publicly present"
+            return (
+                f'<li class="map-stop map-stop--{index + 1}"><a '
+                f'href="/lighthouse/runs/{run.id}/town/{escape(location.id)}" {current}>'
+                f'<span class="map-stop__number">{index + 1:02}</span>'
+                f"<strong>{escape(location.name)}</strong>"
+                f"<span>{escape(public_name)}</span></a></li>"
+            )
+
+        map_links = "".join(
+            map_stop(index, location) for index, location in enumerate(world.locations)
+        )
+        selected = next((item for item in world.locations if item.id == selected_location_id), None)
+        detail = ""
+        page_title = "Walk Greyhaven"
+        if selected is not None:
+            page_title = selected.name
+            events = public_location_events(database, run.id, selected.id)
+            panels = public_location_panels(database, run.id, selected.id)
+            people = by_location[selected.id]
+            people_markup = (
+                "".join(
+                    f"<li><strong>{escape(item.character_name)}</strong><span>{escape(item.activity)}</span></li>"
+                    for item in people
+                )
+                or '<li class="quiet-note">No one is publicly available here right now.</li>'
+            )
+            event_markup = (
+                "".join(
+                    f'<li><time datetime="{_aware(item.occurred_at).isoformat()}">{_aware(item.occurred_at).strftime("%H:%M")}</time><span>{escape(item.summary)}</span></li>'
+                    for item in events
+                )
+                or '<li class="quiet-note">No public event has been reported here yet.</li>'
+            )
+            panel_markup = (
+                "".join(
+                    f'<article class="location-panel"><p class="eyebrow">Published dispatch</p><h3>{escape(item.title)}</h3><p>{escape(item.body)}</p></article>'
+                    for item in panels
+                )
+                or '<p class="quiet-note">No episode panel points here yet. The archive will update after publication.</p>'
+            )
+            atmosphere = selected.presentation_copy or selected.description
+            detail = f"""
+              <article class="place-file" aria-labelledby="place-title">
+                <a class="back-link" href="/lighthouse/runs/{run.id}/town">← Return to the whole town</a>
+                <p class="eyebrow">Location file</p>
+                <h1 id="place-title">{escape(selected.name)}</h1>
+                <p class="place-file__atmosphere">{escape(atmosphere)}</p>
+                <div class="place-file__grid">
+                  <section aria-labelledby="present-title"><h2 id="present-title">Here now</h2><ul class="presence-list">{people_markup}</ul></section>
+                  <section aria-labelledby="events-title"><h2 id="events-title">Recent public events</h2><ul class="event-list">{event_markup}</ul></section>
+                </div>
+                <section class="location-panels" aria-labelledby="panels-title"><h2 id="panels-title">From the published story</h2>{panel_markup}</section>
+              </article>
+            """
+        else:
+            detail = f"""
+              <section class="town-intro" aria-labelledby="town-title">
+                <p class="eyebrow">Island field chart · Day {day}</p>
+                <h1 id="town-title">Walk<br>Greyhaven.</h1>
+                <p>Choose a marked place to see its atmosphere, public activity, and the people who can be found there now.</p>
+              </section>
+            """
+        stale = (
+            '<p class="state-banner" role="status"><strong>The town clock is paused.</strong> '
+            "These positions are the last confirmed public state.</p>"
+            if run.status != RunStatus.RUNNING
+            else ""
+        )
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(page_title)} — The Lighthouse</title><link rel="stylesheet" href="/static/lighthouse.css"></head>
+<body><a class="skip-link" href="#town">Skip to the town</a>
+<header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {day} <span aria-hidden="true">·</span> {simulation_time.strftime("%H:%M")}</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town" aria-current="page">Town</a><a href="/lighthouse/archive">Archive</a></nav></header>
+<main id="town" class="town-experience" tabindex="-1">{stale}<div class="town-layout">{detail}<nav class="island-chart" aria-label="Greyhaven locations"><p class="chart-label">Public presence chart</p><ol>{map_links}</ol><p class="chart-key"><span aria-hidden="true">●</span> Positions only show public activity. Private movements remain private.</p></nav></div></main>
+<footer><p>The Lighthouse is a living story by Rumor Mill.</p><p><span class="status-dot" aria-hidden="true"></span>Greyhaven is unfolding</p></footer></body></html>"""
+
+    @app.get("/lighthouse/runs/{run_id}/town", response_class=HTMLResponse, include_in_schema=False)
+    def live_town(run_id: UUID, database: Annotated[Session, Depends(session)]) -> HTMLResponse:
+        run, world = load_run(run_id)
+        return HTMLResponse(town_document(run, world, database))
+
+    @app.get(
+        "/lighthouse/runs/{run_id}/town/{location_id}",
+        response_class=HTMLResponse,
+        include_in_schema=False,
+    )
+    def live_location(
+        run_id: UUID, location_id: str, database: Annotated[Session, Depends(session)]
+    ) -> HTMLResponse:
+        run, world = load_run(run_id)
+        if not any(item.id == location_id for item in world.locations):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "location not found")
+        return HTMLResponse(town_document(run, world, database, selected_location_id=location_id))
 
     def conversation_response(model: ConversationModel, visitor_id: UUID) -> ConversationResponse:
         return ConversationResponse(

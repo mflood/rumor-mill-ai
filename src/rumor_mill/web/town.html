@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#071a26">
+    <title>Walk Greyhaven — The Lighthouse</title>
+    <meta name="description" content="Explore the public places of Greyhaven.">
+    <link rel="stylesheet" href="/static/lighthouse.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#town">Skip to the town</a>
+    <header class="site-header">
+      <a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a>
+      <p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Town chart</p>
+      <nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/town" aria-current="page">Town</a><a href="/lighthouse/archive">Archive</a></nav>
+    </header>
+    <main id="town" class="town-experience" tabindex="-1">
+      <p class="state-banner" role="status"><strong>The live town signal is unavailable.</strong> You can still use the field chart. Enter a running story to see current public activity.</p>
+      <div class="town-layout">
+        <section class="town-intro" aria-labelledby="town-title">
+          <p class="eyebrow">Island field chart</p>
+          <h1 id="town-title">Walk<br>Greyhaven.</h1>
+          <p>Seven places hold the island together. Live positions and recent dispatches appear here once a story run is selected.</p>
+        </section>
+        <nav class="island-chart" aria-label="Greyhaven locations">
+          <p class="chart-label">Authored island chart</p>
+          <ol>
+            <li class="map-stop map-stop--1"><span><span class="map-stop__number">01</span><strong>Northlight Lighthouse</strong><span>Headland · forty minutes from harbor</span></span></li>
+            <li class="map-stop map-stop--2"><span><span class="map-stop__number">02</span><strong>Harbor Dispatch</strong><span>Radio and tide office</span></span></li>
+            <li class="map-stop map-stop--3"><span><span class="map-stop__number">03</span><strong>Council Rooms</strong><span>Five minutes uphill</span></span></li>
+            <li class="map-stop map-stop--4"><span><span class="map-stop__number">04</span><strong>Net Loft</strong><span>Harbor workshop</span></span></li>
+            <li class="map-stop map-stop--5"><span><span class="map-stop__number">05</span><strong>Breakwater Inn</strong><span>The island’s public room</span></span></li>
+            <li class="map-stop map-stop--6"><span><span class="map-stop__number">06</span><strong>Widow’s Steps</strong><span>Broken cliff path</span></span></li>
+            <li class="map-stop map-stop--7"><span><span class="map-stop__number">07</span><strong>Orin’s Cottage</strong><span>Lamp shop and archive</span></span></li>
+          </ol>
+          <p class="chart-key"><span aria-hidden="true">●</span> The chart remains navigable without map imagery.</p>
+        </nav>
+      </div>
+    </main>
+    <footer><p>The Lighthouse is a living story by Rumor Mill.</p><p>Greyhaven field chart</p></footer>
+  </body>
+</html>

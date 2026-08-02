@@ -234,6 +234,44 @@ footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--
 .dispatch-console > div { margin-top: .6rem; display: grid; grid-template-columns: 1fr minmax(12rem, .45fr); align-items: center; gap: 1rem; }
 .dispatch-console span { color: var(--fog); font: .65rem var(--utility); }
 
+/* Town: a navigable field chart whose routes remain legible without the drawing. */
+.town-experience { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--space-2) var(--space-4); }
+.state-banner { margin: 0 0 var(--space-3); padding: 1rem var(--space-2); background: var(--sun); color: var(--ink); font-size: .9rem; }
+.state-banner strong { font-family: var(--utility); text-transform: uppercase; }
+.town-layout { min-height: 72svh; display: grid; grid-template-columns: minmax(17rem, .7fr) minmax(28rem, 1.3fr); gap: var(--space-4); align-items: center; }
+.town-intro h1, .place-file h1 { margin: 0; font-size: clamp(4rem, 6vw, 6.2rem); }
+.town-intro > p:last-child { max-width: 27rem; color: var(--fog); font-size: 1.08rem; }
+.island-chart { position: relative; min-height: 42rem; display: block; padding: var(--space-4); background: #d8ded8; color: var(--ink); border: .55rem solid var(--storm); box-shadow: .8rem .8rem 0 var(--signal); transform: rotate(.35deg); isolation: isolate; }
+.island-chart::before { content: ""; position: absolute; z-index: -1; inset: 7% 8%; background: #718b80; clip-path: polygon(43% 0, 62% 8%, 77% 24%, 70% 37%, 88% 49%, 75% 63%, 84% 78%, 61% 100%, 39% 90%, 17% 80%, 23% 60%, 7% 45%, 25% 30%, 19% 12%); box-shadow: inset 0 0 0 .4rem rgb(7 26 38 / 22%); }
+.island-chart::after { content: "GREYHAVEN · PUBLIC FIELD CHART"; position: absolute; right: -8.5rem; top: 10.5rem; color: rgb(7 26 38 / 45%); font: 700 .6rem var(--utility); letter-spacing: .18em; transform: rotate(90deg); }
+.chart-label { position: absolute; top: 1rem; left: 1.2rem; margin: 0; font: 700 .65rem var(--utility); letter-spacing: .13em; text-transform: uppercase; }
+.island-chart ol { min-height: 34rem; margin: 0; padding: 0; position: relative; list-style: none; }
+.map-stop { position: absolute; width: min(13rem, 31%); }
+.map-stop > a, .map-stop > span { min-height: 4.4rem; display: grid; padding: .65rem; background: var(--paper); color: var(--ink); border: .16rem solid var(--ink); text-decoration: none; box-shadow: .3rem .3rem 0 rgb(7 26 38 / 35%); }
+.map-stop > a:hover, .map-stop > a:focus-visible, .map-stop > a[aria-current="location"] { background: var(--sun); transform: translate(-.15rem, -.15rem); }
+.map-stop strong { font-family: var(--display); font-size: 1.05rem; line-height: .95; text-transform: uppercase; }
+.map-stop > a > span:last-child, .map-stop > span > span:last-child { margin-top: .25rem; font-size: .69rem; line-height: 1.2; }
+.map-stop__number { position: absolute; width: 1.65rem; height: 1.65rem; display: grid; place-items: center; translate: -.95rem -.95rem; border-radius: 50%; background: var(--signal); color: var(--ink); font: 700 .58rem var(--utility); }
+.map-stop--1 { top: 2%; left: 38%; }.map-stop--2 { top: 30%; left: 7%; }.map-stop--3 { top: 28%; right: 5%; }.map-stop--4 { top: 51%; left: 14%; }.map-stop--5 { top: 55%; right: 4%; }.map-stop--6 { bottom: 2%; left: 6%; }.map-stop--7 { bottom: 0; right: 17%; }
+.chart-key { position: absolute; bottom: .5rem; left: 1rem; max-width: 25rem; margin: 0; font: .6rem/1.4 var(--utility); text-transform: uppercase; }
+.chart-key > span { color: var(--signal); }
+.place-file { align-self: start; padding-top: var(--space-3); }
+.back-link { min-height: 2.75rem; display: inline-flex; align-items: center; color: var(--sun); font: 700 .68rem var(--utility); text-transform: uppercase; }
+.place-file h1 { font-size: clamp(4rem, 8vw, 7rem); }
+.place-file__atmosphere { max-width: 37rem; color: var(--fog); font-size: 1.15rem; }
+.place-file__grid { margin-top: var(--space-3); display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.place-file h2 { margin: 0 0 var(--space-2); color: var(--sun); font: 700 1.5rem var(--display); text-transform: uppercase; }
+.presence-list, .event-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid rgb(215 226 223 / 25%); }
+.presence-list li, .event-list li { min-height: 4.5rem; padding: .9rem 0; display: grid; gap: .2rem; border-bottom: 1px solid rgb(215 226 223 / 25%); }
+.presence-list span, .event-list time { color: var(--fog); font-size: .78rem; }
+.event-list li { grid-template-columns: 3.5rem 1fr; }
+.event-list time { font-family: var(--utility); }
+.quiet-note { color: var(--fog); font-style: italic; }
+.location-panels { margin-top: var(--space-4); }
+.location-panel { margin-bottom: var(--space-2); padding: var(--space-2); background: var(--paper); color: var(--ink); border-left: .4rem solid var(--signal); }
+.location-panel h3 { margin: 0; font: 700 2rem/.95 var(--display); text-transform: uppercase; }
+.location-panel .eyebrow { color: #9d2c25; }
+
 @keyframes weather { to { transform: translate3d(-2rem, 3rem, 0); } }
 @media (max-width: 700px) {
   .site-header { grid-template-columns: 1fr auto; gap: .5rem; }
@@ -258,6 +296,15 @@ footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--
   .signal-wire { padding-left: 1.8rem; }
   .signal-message--visitor { margin-left: 0; }
   .dispatch-console > div { grid-template-columns: 1fr; }
+  .town-layout { grid-template-columns: 1fr; align-items: start; }
+  .island-chart { min-height: auto; padding: var(--space-3) var(--space-2); transform: none; }
+  .island-chart::before, .island-chart::after { display: none; }
+  .island-chart ol { min-height: auto; display: grid; gap: .8rem; }
+  .map-stop { position: relative; inset: auto; width: 100%; }
+  .map-stop > a, .map-stop > span { min-height: 3.8rem; }
+  .chart-label { position: static; margin-bottom: var(--space-2); }
+  .chart-key { position: static; margin-top: var(--space-2); }
+  .place-file__grid { grid-template-columns: 1fr; }
   footer { flex-direction: column; }
 }
 @media (max-width: 360px) { h1 { font-size: 4rem; } .wordmark__beam { display: none; } }
