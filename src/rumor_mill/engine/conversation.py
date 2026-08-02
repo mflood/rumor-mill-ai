@@ -95,6 +95,7 @@ class VisitorBeliefProposal(ConversationModel):
 
 class CharacterConversationOutput(ConversationModel):
     reply: NonEmptyText
+    action: NonEmptyText | None = None
     stance: CharacterStance
     cited_memory_ids: tuple[MemoryId, ...] = ()
     cited_claim_ids: tuple[ClaimId, ...] = ()

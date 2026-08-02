@@ -201,6 +201,39 @@ footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--
 .state-notes strong { font-family: var(--display); font-size: 1.25rem; text-transform: uppercase; }
 .state-notes span { color: var(--fog); }
 
+/* Private conversations: a harbor radio circuit, not a generic chat stack. */
+.contact-sheet, .radio-room { max-width: var(--reading); margin: auto; padding: var(--space-4) var(--space-2); }
+.contact-sheet h1, .radio-room h1 { margin: 0; }
+.contact-sheet__intro { max-width: 38rem; color: var(--fog); }
+.contact-grid { margin-top: var(--space-4); display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: var(--space-2); }
+.contact-card { min-height: 17rem; padding: var(--space-2); display: flex; flex-direction: column; background: var(--deep-water); border-top: .45rem solid var(--signal); }
+.contact-card h2 { margin: 0; font: 700 2.4rem/.9 var(--display); text-transform: uppercase; }
+.contact-card p { color: var(--fog); }
+.contact-card form { margin-top: auto; }
+.contact-card button, .dispatch-console button { min-height: 3rem; width: 100%; border: 0; padding: .8rem; background: var(--sun); color: var(--ink); font: 700 .7rem var(--utility); text-transform: uppercase; cursor: pointer; }
+.contact-card button:disabled { background: var(--storm); color: var(--fog); cursor: not-allowed; }
+.radio-room { max-width: 58rem; }
+.radio-room__heading { padding-bottom: var(--space-3); border-bottom: 1px solid rgb(215 226 223 / 25%); }
+.radio-room__heading h1 { font-size: clamp(4rem, 12vw, 8rem); }
+.radio-room__heading > p:last-child { color: var(--fog); }
+.signal-wire { position: relative; margin: var(--space-3) 0; padding: 0 0 0 2.5rem; display: grid; gap: var(--space-2); list-style: none; }
+.signal-wire::before { content: ""; position: absolute; top: 0; bottom: 0; left: .65rem; width: .18rem; background: linear-gradient(var(--sun), var(--signal), var(--storm)); }
+.signal-message { position: relative; max-width: 42rem; padding: var(--space-2); background: var(--paper); color: var(--ink); }
+.signal-message::before { content: ""; position: absolute; top: 1.2rem; left: -2.3rem; width: .85rem; height: .85rem; border: .18rem solid var(--ink); border-radius: 50%; background: var(--sun); }
+.signal-message > span { font: 700 .62rem var(--utility); letter-spacing: .1em; text-transform: uppercase; }
+.signal-message p { margin: .55rem 0 0; }
+.signal-message--visitor { margin-left: auto; background: var(--storm); color: var(--paper); }
+.signal-message--action { background: transparent; color: var(--fog); border: 1px dashed rgb(215 226 223 / 40%); font-style: italic; }
+.signal-message--hesitation { border-left: .4rem solid var(--sun); }
+.signal-message--refusal { border-left: .4rem solid var(--signal); }
+.signal-message--system { background: transparent; color: var(--fog); border: 1px solid var(--storm); }
+.line-status { min-height: 2.5rem; margin: 0; color: var(--sun); font: .68rem var(--utility); text-transform: uppercase; }
+.dispatch-console { position: sticky; bottom: 0; padding: var(--space-2); background: var(--deep-water); border-top: .4rem solid var(--signal); box-shadow: 0 -1rem 2rem rgb(7 26 38 / 75%); }
+.dispatch-console label { display: block; margin-bottom: .5rem; font: 700 .7rem var(--utility); text-transform: uppercase; }
+.dispatch-console textarea { width: 100%; resize: vertical; padding: 1rem; border: 1px solid var(--fog); background: var(--ink); color: var(--paper); font: 1rem/1.5 var(--body); }
+.dispatch-console > div { margin-top: .6rem; display: grid; grid-template-columns: 1fr minmax(12rem, .45fr); align-items: center; gap: 1rem; }
+.dispatch-console span { color: var(--fog); font: .65rem var(--utility); }
+
 @keyframes weather { to { transform: translate3d(-2rem, 3rem, 0); } }
 @media (max-width: 700px) {
   .site-header { grid-template-columns: 1fr auto; gap: .5rem; }
@@ -222,6 +255,9 @@ footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--
   .threads { position: static; }
   .recap-panel { min-height: 26rem; padding: var(--space-3) var(--space-2); }
   .state-notes p { grid-template-columns: 1fr; }
+  .signal-wire { padding-left: 1.8rem; }
+  .signal-message--visitor { margin-left: 0; }
+  .dispatch-console > div { grid-template-columns: 1fr; }
   footer { flex-direction: column; }
 }
 @media (max-width: 360px) { h1 { font-size: 4rem; } .wordmark__beam { display: none; } }
