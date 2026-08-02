@@ -182,6 +182,52 @@ def test_production_readiness_requires_a_worker_heartbeat(tmp_path: Path) -> Non
     engine.dispose()
 
 
+def test_story_pipeline_readiness_detects_non_progressing_clock(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'stalled-pipeline.db'}"
+    engine = create_database_engine(url)
+    from rumor_mill.adapters.persistence.models import Base
+
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    now = datetime.now(UTC)
+    with factory.begin() as database:
+        result = _bootstrap_session(database, definition)
+        run = database.get(RunModel, result.run_id)
+        assert run is not None
+        run.started_at = now - timedelta(hours=1)
+        database.add(
+            WorkerHeartbeatModel(
+                worker_id="worker.stalled",
+                last_seen_at=now,
+                story_pipeline_ready=True,
+                last_clock_advanced_at=now - timedelta(hours=1),
+            )
+        )
+    client = TestClient(
+        create_app(
+            Settings(
+                database_url=url,
+                environment="production",
+                story_pipeline_stale_after_seconds=300,
+            ),
+            factory,
+        )
+    )
+
+    stalled = client.get("/health/ready")
+    assert stalled.status_code == 503
+    assert stalled.json()["components"]["worker"] == "ok"
+    assert stalled.json()["components"]["story_pipeline"] == "degraded"
+
+    with factory.begin() as database:
+        heartbeat = database.get(WorkerHeartbeatModel, "worker.stalled")
+        assert heartbeat is not None
+        heartbeat.last_clock_advanced_at = datetime.now(UTC)
+    assert client.get("/health/ready").status_code == 200
+    engine.dispose()
+
+
 def test_production_shaped_bootstrap_advances_executes_and_publishes_once(tmp_path: Path) -> None:
     url = f"sqlite:///{tmp_path / 'autonomous-story.db'}"
     config = Config(str(ROOT / "alembic.ini"))
@@ -224,7 +270,10 @@ def test_production_shaped_bootstrap_advances_executes_and_publishes_once(tmp_pa
         assert artifacts[0].kind == "story_card"
         assert artifacts[0].title == "Dark Headland"
         assert heartbeat is not None and heartbeat.story_pipeline_ready
+        assert heartbeat.last_clock_advanced_at is not None
+        assert heartbeat.last_story_job_enqueued_at is not None
         assert heartbeat.last_story_job_completed_at is not None
+        assert heartbeat.story_queue_depth == 0
     engine.dispose()
 
 
@@ -557,7 +606,9 @@ def test_deployment_smoke_checks_health_assets_and_public_pages() -> None:
         assert timeout == 15
         url = request.full_url if hasattr(request, "full_url") else str(request)
         requested.append(url)
-        if url.endswith(("/health/live", "/health/ready", "/health/product")):
+        if url.endswith("/health/ready"):
+            body = b'{"status":"ok","components":{"story_pipeline":"ok"}}'
+        elif url.endswith(("/health/live", "/health/product")):
             body = b'{"status":"ok"}'
         elif url.endswith("/lighthouse/feedback"):
             body = b"Share feedback on GitHub"
@@ -592,21 +643,26 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
 
     healthy_prefix = [
         response(200, b'{"status":"ok"}'),
-        response(200, b'{"status":"ok"}'),
+        response(200, b'{"status":"ok","components":{"story_pipeline":"ok"}}'),
         response(200, b'{"status":"ok"}'),
         response(200, b"css"),
         response(200, b"svg"),
         response(200, b'property="og:title"'),
         response(200, b"Share feedback on GitHub"),
     ]
+    ready = response(200, b'{"status":"ok","components":{"story_pipeline":"ok"}}')
     playable_today = b'property="og:title" href="/lighthouse/runs/123/town/harbor"'
     for responses, message in (
         ([response(503, b"{}")], "/health/live returned HTTP 503"),
         ([response(200, b'{"status":"degraded"}')], "/health/live reported degraded"),
         (
+            [response(200, b'{"status":"ok"}'), response(200, b'{"status":"ok"}')],
+            "/health/ready did not verify autonomous story progression",
+        ),
+        (
             [
                 response(200, b'{"status":"ok"}'),
-                response(200, b'{"status":"ok"}'),
+                ready,
                 response(200, b'{"status":"ok"}'),
                 response(200, b""),
             ],
@@ -615,7 +671,7 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
         (
             [
                 response(200, b'{"status":"ok"}'),
-                response(200, b'{"status":"ok"}'),
+                ready,
                 response(200, b'{"status":"ok"}'),
                 response(200, b"css"),
                 response(200, b"svg"),

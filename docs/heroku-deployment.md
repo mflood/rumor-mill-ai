@@ -56,9 +56,11 @@ uv run python scripts/smoke_deployment.py https://<app-name>.herokuapp.com
 heroku logs --tail -a <app-name>
 ```
 
-The smoke check requires liveness, infrastructure readiness (including a recent worker heartbeat),
-product readiness, and packaged assets. It creates a visitor session, follows the entry redirect to
-Today, and opens a linked location or character page. If any playable check fails, the GitHub
+The smoke check requires liveness, infrastructure readiness, a recent autonomous clock-progress
+signal, product readiness, and packaged assets. It only reads persisted pipeline telemetry and
+public pages; it never enqueues work or invokes a model provider, so it cannot create a paid call.
+It creates a visitor session, follows the entry redirect to Today, and opens a linked location or
+character page. If any playable check fails, the GitHub
 deployment job fails; follow the failed-smoke rollback procedure in `ci-cd.md`. If release
 migrations fail, Heroku does not deploy the new release. Inspect the release
 log, correct the migration or configuration, and redeploy; never bypass the release phase.
@@ -109,15 +111,27 @@ If the clock advances but no output appears:
 
 1. Check `/health/ready`. `worker=ok` with `story_pipeline=degraded` identifies a fresh clock-only
    or outdated worker; redeploy the current worker image and confirm the migration ran.
-2. Open `/operator/console`. The Story pipeline card must say `Operational`; it also shows whether
-   it is awaiting the first due job or when it last completed story output.
+2. Open `/operator/console`. The Story pipeline card must say `Operational`; it shows the last clock
+   advancement, enqueue, completion, and current queue depth.
 3. Inspect the run's job counts and recovery page. Pending jobs indicate claim/execution trouble;
    failed or dead jobs include a safe error summary and the existing explicit retry action.
 4. Confirm the run is `running`, its clock mode is `wall`, and its simulation time has crossed the
    five-minute first-beat boundary. A paused/manual run will not autonomously advance.
-5. If no jobs exist after that boundary, run the idempotent Lighthouse bootstrap command, verify the
-   stored world's beat graph and routines, and restart the worker. Do not manually advance unless
-   diagnosing a clock problem; normal production output requires no API invocation.
+5. Recover according to the displayed state:
+   - **No jobs after six minutes:** verify a running `wall` season and the stored beat graph, rerun
+     the idempotent bootstrap, then restart the worker. A missing clock-advancement timestamp points
+     to clock polling or run configuration rather than the provider.
+   - **Queue depth is accumulating:** inspect worker logs and the oldest pending/failed job, correct
+     database, worker-capacity, or provider availability, then restart the worker. Readiness becomes
+     degraded when an available job makes no progress for 15 minutes.
+   - **Repeated failures:** use the run recovery page's safe error category, fix the common cause,
+     and explicitly retry eligible jobs. Dead jobs require code/config correction and a deploy; do
+     not repeatedly retry them or expose their payloads in alerts.
+
+Do not manually advance unless diagnosing a clock problem; normal production output requires no API
+invocation. Alerts should use only the bounded `story_pipeline` readiness component and
+`story_pipeline_progressing`/`story_queue_depth` metrics. Never label alerts with job/run UUIDs,
+visitor data, prompts, provider responses, or generated content.
 
 Rotate the production credential whenever monitoring access changes and at least every 90 days:
 

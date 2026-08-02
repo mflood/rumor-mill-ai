@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     requests_per_minute: int = Field(default=120, ge=0)
     active_visitor_window_minutes: int = Field(default=15, ge=1)
     worker_stale_after_seconds: int = Field(default=600, ge=1)
+    story_pipeline_stale_after_seconds: int = Field(default=900, ge=1)
     worker_poll_seconds: float = Field(default=5.0, gt=0, le=300)
     worker_run_batch_size: int = Field(default=100, ge=1, le=1_000)
     worker_job_batch_size: int = Field(default=100, ge=1, le=1_000)

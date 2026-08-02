@@ -87,6 +87,7 @@ class SimulationWorker:
             clock=_WorkerClock(self._clock),
         )
         advanced = 0
+        jobs_enqueued = 0
         for run in runs:
             try:
                 result = scheduler.advance(run.id)
@@ -95,6 +96,7 @@ class SimulationWorker:
                 continue
             if result.ticks:
                 advanced += 1
+                jobs_enqueued += result.jobs_enqueued
                 logger.info(
                     "simulation_run_advanced",
                     extra={
@@ -137,10 +139,15 @@ class SimulationWorker:
         self._metrics.set("story_jobs_pending", pending)
         if counts["claimed"] or pending:
             logger.info("story_jobs_polled", extra={**counts, "pending": pending})
-        if counts["completed"]:
-            with self._session_factory.begin() as database:
-                heartbeat = database.get(WorkerHeartbeatModel, self._worker_id)
-                assert heartbeat is not None
+        with self._session_factory.begin() as database:
+            heartbeat = database.get(WorkerHeartbeatModel, self._worker_id)
+            assert heartbeat is not None
+            heartbeat.story_queue_depth = pending
+            if advanced:
+                heartbeat.last_clock_advanced_at = now
+            if jobs_enqueued:
+                heartbeat.last_story_job_enqueued_at = now
+            if counts["completed"]:
                 heartbeat.last_story_job_completed_at = self._clock()
         return advanced
 

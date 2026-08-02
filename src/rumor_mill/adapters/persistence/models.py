@@ -308,7 +308,12 @@ class WorkerHeartbeatModel(Base):
     story_pipeline_ready: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    last_clock_advanced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_story_job_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_story_job_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    story_queue_depth: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
 
 class OperatorAuditModel(IdMixin, CreatedMixin, Base):
