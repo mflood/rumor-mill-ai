@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.6-luna"
     openai_timeout_seconds: float = Field(default=60.0, gt=0)
     openai_max_retries: int = Field(default=2, ge=0, le=10)
+    llm_trace_enabled: bool = Field(  # type: ignore[pydantic-alias]
+        default=False,
+        validation_alias=AliasChoices("LLM_TRACE_ENABLED", "RUMOR_MILL_LLM_TRACE_ENABLED"),
+    )
     visitor_session_days: int = Field(default=365, ge=1, le=730)
     secure_visitor_cookie: bool = True
     conversation_message_limit: int = Field(default=50, ge=1, le=500)

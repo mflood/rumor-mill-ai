@@ -266,6 +266,32 @@ class ConversationModel(IdMixin, CreatedMixin, Base):
     )
 
 
+class LlmTraceMessageModel(IdMixin, CreatedMixin, Base):
+    """One durable outbound or inbound item from an OpenAI call."""
+
+    __tablename__ = "llm_trace_messages"
+
+    call_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    model: Mapped[str] = mapped_column(String(120), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(120), nullable=False)
+    item_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    role: Mapped[str | None] = mapped_column(String(20))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+
+    __table_args__ = (
+        CheckConstraint("direction IN ('outbound','inbound')", name="valid_direction"),
+        CheckConstraint("sequence >= 0", name="nonnegative_sequence"),
+        CheckConstraint("duration_ms IS NULL OR duration_ms >= 0", name="nonnegative_duration"),
+        UniqueConstraint("call_id", "direction", "sequence"),
+        Index("ix_llm_trace_call_created", "call_id", "created_at"),
+        Index("ix_llm_trace_purpose_created", "purpose", "created_at"),
+    )
+
+
 class JobModel(IdMixin, CreatedMixin, Base):
     __tablename__ = "jobs"
 
