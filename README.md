@@ -36,3 +36,14 @@ make format   # apply formatting
 make ci       # all non-mutating CI checks
 make db-down  # stop local Postgres
 ```
+
+## Database migrations
+
+```shell
+make db-migrate   # upgrade Postgres to the latest schema
+make db-rollback  # roll back one revision
+```
+
+The initial migration persists worlds, runs, events, claims, beliefs, memories, scenes,
+conversations, jobs, and presentation artifacts. Repository implementations live behind engine
+ports so domain code does not import SQLAlchemy.

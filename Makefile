@@ -1,4 +1,4 @@
-.PHONY: setup run test lint format ci db-up db-down
+.PHONY: setup run test lint format ci db-up db-down db-migrate db-rollback
 
 setup:
 	uv sync --frozen
@@ -30,3 +30,9 @@ db-up:
 
 db-down:
 	docker compose down
+
+db-migrate:
+	uv run alembic upgrade head
+
+db-rollback:
+	uv run alembic downgrade -1
