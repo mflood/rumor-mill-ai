@@ -430,6 +430,134 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     assert client.get(f"/lighthouse/runs/{run_id}/people/nobody").status_code == 404
 
 
+def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    now = datetime.now(UTC)
+    first_id = uuid4()
+    second_id = uuid4()
+
+    def recap_payload(
+        *, story_date: str, headline: str, dek: str, panel_title: str
+    ) -> dict[str, object]:
+        return {
+            "visibility": "public",
+            "recap": {
+                "story_date": story_date,
+                "headline": headline,
+                "dek": dek,
+                "panels": [
+                    {
+                        "source_id": str(uuid4()),
+                        "title": panel_title,
+                        "body": f"Public panel for {headline}.",
+                        "location_id": "market",
+                        "character_id": "ada",
+                    }
+                ],
+                "active_threads": [],
+                "suggested_location_ids": ["market"],
+                "suggested_character_ids": ["ada"],
+                "state": "published",
+            },
+        }
+
+    with factory() as database:
+        database.add_all(
+            [
+                ArtifactModel(
+                    id=first_id,
+                    run_id=run_id,
+                    kind="daily_recap",
+                    title="First",
+                    body="First public recap.",
+                    generated_at=now,
+                    source_ids=[],
+                    payload=recap_payload(
+                        story_date="2026-08-01",
+                        headline="The market goes quiet",
+                        dek="Ada finds the west stalls unexpectedly empty.",
+                        panel_title="Empty lanterns",
+                    ),
+                ),
+                ArtifactModel(
+                    id=second_id,
+                    run_id=run_id,
+                    kind="daily_recap",
+                    title="Second",
+                    body="Second public recap.",
+                    generated_at=now + timedelta(minutes=1),
+                    source_ids=[],
+                    payload=recap_payload(
+                        story_date="2026-08-02",
+                        headline="A key changes hands",
+                        dek="Bea leaves the archive carrying a wrapped parcel.",
+                        panel_title="The parcel",
+                    ),
+                ),
+                ArtifactModel(
+                    id=uuid4(),
+                    run_id=run_id,
+                    kind="daily_recap",
+                    title="Hidden",
+                    body="Hidden canon recap.",
+                    generated_at=now + timedelta(minutes=2),
+                    source_ids=[],
+                    payload={
+                        **recap_payload(
+                            story_date="2026-08-03",
+                            headline="Secret culprit",
+                            dek="HIDDEN CANON MUST NOT APPEAR.",
+                            panel_title="Secret panel",
+                        ),
+                        "visibility": "engine_only",
+                    },
+                ),
+                ArtifactModel(
+                    id=uuid4(),
+                    run_id=run_id,
+                    kind="conversation",
+                    title="Raw chat",
+                    body="RAW PRIVATE CHAT MUST NOT APPEAR.",
+                    generated_at=now,
+                    source_ids=[],
+                    payload={"visibility": "public"},
+                ),
+            ]
+        )
+        database.commit()
+
+    archive = client.get(f"/lighthouse/runs/{run_id}/archive")
+    assert archive.status_code == 200
+    assert "The market goes quiet" in archive.text
+    assert "A key changes hands" in archive.text
+    assert "HIDDEN CANON" not in archive.text
+    assert "RAW PRIVATE CHAT" not in archive.text
+    assert f'href="/lighthouse/runs/{run_id}/archive/{first_id}"' in archive.text
+    assert 'property="og:description"' in archive.text
+    bounded = client.get(f"/lighthouse/runs/{run_id}/archive?through={first_id}")
+    assert "Spoilers stop after episode 1" in bounded.text
+    assert "Ada finds the west stalls unexpectedly empty" in bounded.text
+    assert "A key changes hands" not in bounded.text
+    assert client.get(f"/lighthouse/runs/{run_id}/archive?through={uuid4()}").status_code == 404
+
+    first = client.get(f"/lighthouse/runs/{run_id}/archive/{first_id}")
+    assert first.status_code == 200
+    assert "Empty lanterns" in first.text
+    assert "Beginning of the season" in first.text
+    assert f'href="/lighthouse/runs/{run_id}/archive/{second_id}"' in first.text
+    assert f'rel="canonical" href="/lighthouse/runs/{run_id}/archive/{first_id}"' in first.text
+    second = client.get(f"/lighthouse/runs/{run_id}/archive/{second_id}")
+    assert "You are caught up" in second.text
+    assert f'href="/lighthouse/runs/{run_id}/archive/{first_id}"' in second.text
+    assert client.get(f"/lighthouse/runs/{run_id}/archive/{uuid4()}").status_code == 404
+
+    empty_run = UUID(str(initialize(client)["id"]))
+    empty = client.get(f"/lighthouse/runs/{empty_run}/archive")
+    assert "The binding is empty" in empty.text
+    assert "No public dispatch has been bound" in empty.text
+
+
 def test_authentication_validation_and_not_found_errors(api) -> None:  # type: ignore[no-untyped-def]
     client, _ = api
     payload = {"definition": world_payload()}

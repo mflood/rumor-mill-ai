@@ -306,6 +306,42 @@ footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--
 .margin-notes li { margin-bottom: .65rem; }
 .offline-note { max-width: 36rem; padding: var(--space-2); border-left: .4rem solid var(--signal); color: var(--fog); }
 
+/* Archive: a bound season reel, where numbering encodes actual story order. */
+.season-archive { max-width: var(--reading); margin: auto; padding: var(--space-4) var(--space-2); }
+.archive-heading { min-height: 60svh; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(18rem, .75fr); align-content: center; gap: var(--space-3); border-bottom: 1px solid rgb(215 226 223 / 25%); }
+.archive-heading .eyebrow { grid-column: 1 / -1; }
+.archive-heading h1 { margin: 0; font-size: clamp(4.5rem, 10vw, 8.5rem); }
+.archive-heading > p:not(.eyebrow) { max-width: 34rem; align-self: end; color: var(--fog); font-size: 1.15rem; }
+.spoiler-boundary { grid-column: 1 / -1; padding: 1rem var(--space-2); display: flex; justify-content: space-between; gap: 1rem; background: var(--sun); color: var(--ink); }
+.spoiler-boundary strong { font: 700 .7rem var(--utility); text-transform: uppercase; }
+.episode-reel { position: relative; margin: var(--space-4) 0; padding: 0; list-style: none; }
+.episode-reel::before { content: ""; position: absolute; top: 0; bottom: 0; left: 4rem; width: .2rem; background: linear-gradient(var(--sun), var(--signal)); }
+.episode-entry { position: relative; margin: 0 0 var(--space-3); padding-left: 8rem; }
+.episode-entry > a { min-height: 12rem; padding: var(--space-2); display: grid; grid-template-columns: 6rem 1fr; gap: var(--space-2); background: var(--paper); color: var(--ink); text-decoration: none; box-shadow: .55rem .55rem 0 var(--storm); }
+.episode-entry > a:hover, .episode-entry > a:focus-visible { background: var(--sun); transform: translateX(.25rem); }
+.episode-number { position: absolute; left: 1.5rem; width: 5.2rem; height: 5.2rem; display: grid; place-items: center; border-radius: 50%; background: var(--signal); color: var(--ink); font: 700 2rem var(--display); border: .35rem solid var(--ink); }
+.episode-entry__copy { display: grid; align-content: center; gap: .6rem; }
+.episode-entry__copy time { font: 700 .65rem var(--utility); letter-spacing: .08em; text-transform: uppercase; }
+.episode-entry__copy strong { font: 700 clamp(2rem, 5vw, 4rem)/.9 var(--display); text-transform: uppercase; }
+.episode-entry__copy > span:last-child { max-width: 44rem; }
+.episode-entry details { margin-left: var(--space-2); padding: .7rem var(--space-2); border-left: .3rem solid var(--sun); color: var(--fog); }
+.episode-entry summary { min-height: 2.75rem; display: flex; align-items: center; font: 700 .68rem var(--utility); text-transform: uppercase; cursor: pointer; }
+.archive-empty { min-height: 10rem; margin-left: 8rem; padding: var(--space-3); display: grid; align-content: center; gap: .5rem; border: 1px dashed var(--fog); color: var(--fog); }
+.archive-empty strong { color: var(--paper); font: 700 2rem var(--display); text-transform: uppercase; }
+.episode-page { max-width: 66rem; margin: auto; }
+.episode-page > header { min-height: 55svh; padding: var(--space-4) 0; display: flex; flex-direction: column; justify-content: end; border-bottom: .5rem solid var(--signal); }
+.episode-page h1 { max-width: 58rem; margin: 0; font-size: clamp(4rem, 10vw, 8rem); }
+.episode-page > header > p:not(.eyebrow) { max-width: 43rem; color: var(--fog); font-size: 1.2rem; }
+.episode-page time { color: var(--sun); font: .65rem var(--utility); text-transform: uppercase; }
+.archive-panels { margin: var(--space-4) 0; display: grid; gap: var(--space-3); }
+.archive-panel { min-height: 18rem; padding: var(--space-3); display: flex; flex-direction: column; justify-content: end; background: var(--paper); color: var(--ink); box-shadow: .6rem .6rem 0 var(--storm); }
+.archive-panel:nth-child(even) { background: var(--deep-water); color: var(--paper); border-left: .5rem solid var(--sun); }
+.archive-panel h2 { max-width: 45rem; margin: 0; font: 700 clamp(2.5rem, 6vw, 5rem)/.9 var(--display); text-transform: uppercase; }
+.archive-panel .eyebrow { color: #9d2c25; }
+.archive-panel:nth-child(even) .eyebrow { color: var(--sun); }
+.episode-navigation { min-height: 5rem; padding: var(--space-2) 0; display: flex; justify-content: space-between; gap: 1rem; border-top: 1px solid rgb(215 226 223 / 25%); }
+.episode-navigation a, .episode-navigation span { min-height: 2.75rem; display: flex; align-items: center; color: var(--sun); font: 700 .68rem var(--utility); text-transform: uppercase; }
+
 @keyframes weather { to { transform: translate3d(-2rem, 3rem, 0); } }
 @media (max-width: 700px) {
   .site-header { grid-template-columns: 1fr auto; gap: .5rem; }
@@ -346,6 +382,17 @@ footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--
   .profile-facts { grid-template-columns: 1fr; }
   .profile-facts section + section { border-left: 0; border-top: 1px solid rgb(215 226 223 / 25%); }
   .margin-notes { width: 100%; transform: none; }
+  .archive-heading { min-height: auto; grid-template-columns: 1fr; padding-bottom: var(--space-4); }
+  .archive-heading .eyebrow, .spoiler-boundary { grid-column: auto; }
+  .archive-heading h1 { font-size: clamp(3.8rem, 20vw, 6rem); }
+  .spoiler-boundary { flex-direction: column; }
+  .episode-reel::before { left: 1.5rem; }
+  .episode-entry { padding-left: 3.5rem; }
+  .episode-number { left: -.75rem; width: 4rem; height: 4rem; font-size: 1.5rem; }
+  .episode-entry > a { min-height: 14rem; grid-template-columns: 1fr; padding-left: var(--space-3); }
+  .episode-entry details { margin-left: 0; }
+  .archive-empty { margin-left: 3.5rem; }
+  .episode-page > header { min-height: auto; }
   footer { flex-direction: column; }
 }
 @media (max-width: 360px) { h1 { font-size: 4rem; } .wordmark__beam { display: none; } }

@@ -335,6 +335,11 @@ def create_app(
         """Render an authored, useful town map when no live run has been selected."""
         return HTMLResponse((web_root / "town.html").read_text(encoding="utf-8"))
 
+    @app.get("/lighthouse/archive", response_class=HTMLResponse, include_in_schema=False)
+    def lighthouse_archive() -> HTMLResponse:
+        """Render a useful archive fallback when no live run has been selected."""
+        return HTMLResponse((web_root / "archive.html").read_text(encoding="utf-8"))
+
     @app.post("/lighthouse/session", include_in_schema=False)
     def enter_lighthouse(database: Annotated[Session, Depends(session)]) -> RedirectResponse:
         response = RedirectResponse("/lighthouse/today", status_code=status.HTTP_303_SEE_OTHER)
@@ -833,6 +838,126 @@ def create_app(
         )
         content = f"""<article class="profile-file" aria-labelledby="profile-name"><a class="back-link" href="/lighthouse/runs/{run.id}/people">← Return to the cast ledger</a><header><div class="profile-monogram" aria-hidden="true">{escape(character.name[0])}</div><div><p class="eyebrow">Public character file</p><h1 id="profile-name">{escape(character.name)}</h1><p class="profile-bio">{escape(character.description)}</p></div></header><div class="profile-facts"><section><h2>Voice</h2><p>{escape(character.public_voice or "Their voice is not publicly known yet.")}</p></section><section><h2>Whereabouts</h2><p>{location_markup}</p></section><section><h2>Known connections</h2><ul>{connections_markup}</ul></section></div><aside class="margin-notes" aria-labelledby="notes-title"><p class="eyebrow">Written from your visit</p><h2 id="notes-title">What stands between you</h2><p class="relationship-cue">{escape(relationship)}</p><h3>Your remembered exchanges</h3><ul>{memory_markup}</ul></aside>{talk_markup}</article>"""
         return HTMLResponse(profile_shell(run, character.name, content))
+
+    def published_recaps(database: Session, run_id: UUID) -> list[ArtifactModel]:
+        return [
+            artifact
+            for artifact in database.scalars(
+                select(ArtifactModel)
+                .where(ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap")
+                .order_by(ArtifactModel.generated_at, ArtifactModel.id)
+            )
+            if artifact.payload.get("visibility", "public") == "public"
+            and "recap" in artifact.payload
+        ]
+
+    def story_so_far(recaps: list[ArtifactModel]) -> str:
+        if not recaps:
+            return "No public dispatch has been bound into the archive yet."
+        summaries = [DailyRecap.model_validate(item.payload["recap"]).dek for item in recaps]
+        return " ".join(summaries[-4:])
+
+    def archive_shell(
+        run: RunRecord,
+        title: str,
+        description: str,
+        canonical_path: str,
+        content: str,
+    ) -> str:
+        return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(title)} — The Lighthouse</title><meta name="description" content="{escape(description)}"><meta property="og:type" content="article"><meta property="og:title" content="{escape(title)} — The Lighthouse"><meta property="og:description" content="{escape(description)}"><meta property="og:url" content="{escape(canonical_path)}"><meta property="og:site_name" content="The Lighthouse"><link rel="canonical" href="{escape(canonical_path)}"><link rel="stylesheet" href="/static/lighthouse.css"></head>
+<body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {story_day(run)} <span aria-hidden="true">·</span> Season archive</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town">Town</a><a href="/lighthouse/runs/{run.id}/archive" aria-current="page">Archive</a></nav></header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only published presentation artifacts appear in this archive.</p><p><span class="status-dot" aria-hidden="true"></span>Bound in story order</p></footer></body></html>"""
+
+    @app.get(
+        "/lighthouse/runs/{run_id}/archive",
+        response_class=HTMLResponse,
+        include_in_schema=False,
+    )
+    def episode_archive(
+        run_id: UUID,
+        database: Annotated[Session, Depends(session)],
+        through: Annotated[UUID | None, Query()] = None,
+    ) -> HTMLResponse:
+        run, _ = load_run(run_id)
+        recaps = published_recaps(database, run_id)
+        visible = recaps
+        boundary_note = "Showing every published episode."
+        if through is not None:
+            boundary = next(
+                (index for index, item in enumerate(recaps) if item.id == through), None
+            )
+            if boundary is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "spoiler boundary not found")
+            visible = recaps[: boundary + 1]
+            boundary_note = f"Spoilers stop after episode {boundary + 1}."
+        episode_items = []
+        for index, artifact in enumerate(visible):
+            recap = DailyRecap.model_validate(artifact.payload["recap"])
+            panel_titles = "".join(f"<li>{escape(panel.title)}</li>" for panel in recap.panels)
+            episode_items.append(
+                f"""<li class="episode-entry"><a href="/lighthouse/runs/{run.id}/archive/{artifact.id}"><span class="episode-number">{index + 1:02}</span><span class="episode-entry__copy"><time datetime="{artifact.generated_at.isoformat()}">{recap.story_date.strftime("%B %d, %Y")}</time><strong>{escape(recap.headline)}</strong><span>{escape(recap.dek)}</span></span></a><details><summary>Panels in this episode</summary><ol>{panel_titles or "<li>No panels were published.</li>"}</ol></details></li>"""
+            )
+        empty = (
+            '<li class="archive-empty"><strong>The binding is empty.</strong><span>The first published daily dispatch will appear here automatically.</span></li>'
+            if not episode_items
+            else ""
+        )
+        summary = story_so_far(visible)
+        content = f"""<header class="archive-heading"><p class="eyebrow">The season so far</p><h1>Previously,<br>in Greyhaven.</h1><p>{escape(summary)}</p><div class="spoiler-boundary" role="status"><strong>Your reading boundary</strong><span>{escape(boundary_note)}</span></div></header><ol class="episode-reel">{"".join(episode_items)}{empty}</ol>"""
+        return HTMLResponse(
+            archive_shell(
+                run,
+                "The season so far",
+                summary,
+                f"/lighthouse/runs/{run.id}/archive",
+                content,
+            )
+        )
+
+    @app.get(
+        "/lighthouse/runs/{run_id}/archive/{episode_id}",
+        response_class=HTMLResponse,
+        include_in_schema=False,
+    )
+    def episode_detail(
+        run_id: UUID,
+        episode_id: UUID,
+        database: Annotated[Session, Depends(session)],
+    ) -> HTMLResponse:
+        run, _ = load_run(run_id)
+        recaps = published_recaps(database, run_id)
+        index = next((i for i, item in enumerate(recaps) if item.id == episode_id), None)
+        if index is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "published episode not found")
+        artifact = recaps[index]
+        recap = DailyRecap.model_validate(artifact.payload["recap"])
+        panels = (
+            "".join(
+                f'<article class="archive-panel"><p class="eyebrow">Panel {panel_index + 1:02}</p><h2>{escape(panel.title)}</h2><p>{escape(panel.body)}</p></article>'
+                for panel_index, panel in enumerate(recap.panels)
+            )
+            or '<p class="archive-empty">This quiet-day dispatch contains no panels.</p>'
+        )
+        previous_link = (
+            f'<a rel="prev" href="/lighthouse/runs/{run.id}/archive/{recaps[index - 1].id}">← Previous episode</a>'
+            if index > 0
+            else "<span>Beginning of the season</span>"
+        )
+        next_link = (
+            f'<a rel="next" href="/lighthouse/runs/{run.id}/archive/{recaps[index + 1].id}">Next episode →</a>'
+            if index + 1 < len(recaps)
+            else "<span>You are caught up</span>"
+        )
+        content = f"""<article class="episode-page" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={artifact.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{artifact.generated_at.isoformat()}">Published {artifact.generated_at.strftime("%H:%M UTC")}</time></header><section class="archive-panels" aria-label="Episode panels">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
+        return HTMLResponse(
+            archive_shell(
+                run,
+                recap.headline,
+                recap.dek,
+                f"/lighthouse/runs/{run.id}/archive/{artifact.id}",
+                content,
+            )
+        )
 
     def conversation_response(model: ConversationModel, visitor_id: UUID) -> ConversationResponse:
         return ConversationResponse(
