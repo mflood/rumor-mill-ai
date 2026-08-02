@@ -354,7 +354,7 @@ def create_app(
             visitor_cookie in request.cookies or operator_cookie in request.cookies
         )
         if cookie_authenticated_write and origin and origin != expected_origin:
-            metrics.increment("csrf_rejections_total", path=request.url.path)
+            metrics.increment("csrf_rejections_total")
             response = PlainTextResponse("Cross-origin request rejected.", status_code=403)
         elif request.url.path not in {
             "/health",
@@ -362,7 +362,7 @@ def create_app(
             "/health/ready",
             "/metrics",
         } and not limiter.allow(key):
-            metrics.increment("rate_limit_rejections_total", path=request.url.path)
+            metrics.increment("rate_limit_rejections_total")
             response = PlainTextResponse("Too many requests; retry shortly.", status_code=429)
         else:
             response = await call_next(request)
@@ -410,6 +410,26 @@ def create_app(
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "operator API is disabled")
         if credentials is None or credentials.credentials != expected.get_secret_value():
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid operator credentials")
+
+    def require_metrics_access(
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    ) -> None:
+        if settings.environment != "production":
+            return
+        expected = settings.metrics_api_key
+        if expected is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "production metrics are disabled",
+            )
+        if credentials is None or not compare_digest(
+            credentials.credentials, expected.get_secret_value()
+        ):
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                "invalid metrics credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     def operator_session_token(expires: int) -> str:
         assert settings.operator_api_key is not None
@@ -667,7 +687,11 @@ def create_app(
         )
 
     @app.get("/metrics", response_class=PlainTextResponse, tags=["system"])
-    def prometheus_metrics(database: Annotated[Session, Depends(session)]) -> PlainTextResponse:
+    def prometheus_metrics(
+        database: Annotated[Session, Depends(session)],
+        metrics_access: Annotated[None, Depends(require_metrics_access)],
+    ) -> PlainTextResponse:
+        del metrics_access
         now = datetime.now(UTC)
         active = database.scalar(
             select(func.count())
