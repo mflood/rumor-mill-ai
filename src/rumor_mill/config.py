@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     )
     model_provider: str = "fake"
     operator_api_key: SecretStr | None = None
+    metrics_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.6-luna"
     openai_timeout_seconds: float = Field(default=60.0, gt=0)

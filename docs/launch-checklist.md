@@ -44,7 +44,8 @@ release notes.
   are configured; the expected ceiling and alert recipients are recorded outside the repository.
 - [ ] **Monitoring:** `/health/live`, `/health/ready`, `/health/product`,
   `rumor_mill_playable_story_available`, worker freshness, HTTP 5xx rate, job lag,
-  provider errors, latency, and spend alerts are active and reach the on-call owner.
+  provider errors, latency, and spend alerts are active and reach the on-call owner. The production
+  metrics scrape uses the dedicated Bearer credential documented in `docs/heroku-deployment.md`.
 - [ ] A current database backup exists and the deployed code is compatible with the current schema.
 - [ ] Known limitations are copied from the README into release notes: anonymous browser-local
   identity, no cross-device sync, authored question paths, one demo world, and evolving API/authoring

@@ -43,6 +43,9 @@ Starting a new session rotates the identity and deletes an existing cookie-linke
 - New-session creation rotates any presented visitor identity, preventing session fixation.
 - Per-client rate limiting covers non-health endpoints. Operator writes separately require a bearer
   secret and explicit confirmation for destructive actions.
+- Production metrics require a separate Bearer secret. Metric labels are bounded operational
+  categories and must not contain raw paths, credentials, visitor/run identifiers, UUIDs, prompts,
+  private content, or other high-cardinality values.
 - Responses set CSP, clickjacking protection through `frame-ancestors`, MIME-sniffing protection, a
   same-origin referrer policy, and a restrictive permissions policy.
 - Inputs use strict Pydantic schemas and bounded lengths; SQLAlchemy parameterization prevents SQL

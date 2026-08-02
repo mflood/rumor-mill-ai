@@ -25,6 +25,7 @@ heroku addons:create heroku-postgresql:essential-0 -a <app-name>
 heroku config:set \
   RUMOR_MILL_ENVIRONMENT=production \
   RUMOR_MILL_MODEL_PROVIDER=fake \
+  RUMOR_MILL_METRICS_API_KEY="$(openssl rand -hex 32)" \
   RUMOR_MILL_OPERATOR_API_KEY="$(openssl rand -hex 32)" \
   RUMOR_MILL_SECURE_VISITOR_COOKIE=true \
   -a <app-name>
@@ -76,6 +77,37 @@ run. A validation or database error exits non-zero and therefore fails the relea
 fails, inspect `heroku logs --tail --ps release`, correct the packaged definition or database
 availability, and redeploy. For an already-migrated release, run the same bootstrap command as a
 one-off dyno and repeat the verification queries. Never delete a world or run to force recovery.
+
+## Metrics monitoring
+
+Production `/metrics` requests require the dedicated `RUMOR_MILL_METRICS_API_KEY` as a Bearer
+token. Anonymous or incorrectly authenticated requests receive no Prometheus payload. Configure the
+monitoring integration's scrape request with the header `Authorization: Bearer <secret>` and keep
+the secret in the integration's encrypted credential store, never in dashboards, source, logs, or
+support messages. Verify the integration from an authorized environment:
+
+```shell
+curl --fail-with-body \
+  --header "Authorization: Bearer $RUMOR_MILL_METRICS_API_KEY" \
+  https://<app-name>.herokuapp.com/metrics
+```
+
+Local development does not require a metrics credential, so `curl http://127.0.0.1:8787/metrics`
+remains the standard local workflow. Health endpoints stay public and expose only liveness,
+coarse component readiness, and coarse product availability.
+
+Rotate the production credential whenever monitoring access changes and at least every 90 days:
+
+1. Generate a new random secret in a secure shell with `openssl rand -hex 32`.
+2. Set it with `heroku config:set RUMOR_MILL_METRICS_API_KEY=<new-secret> -a <app-name>`; this creates
+   a new release and immediately invalidates the previous credential.
+3. Update the monitoring integration's encrypted Bearer credential and confirm a successful scrape.
+4. Confirm an anonymous request returns 401 and no `rumor_mill_` metrics, then remove any temporary
+   local copy of the secret.
+
+If the production config value is absent, `/metrics` fails closed with 503 and no metrics payload.
+The exported label set is deliberately bounded and must never include credentials, visitor or run
+identifiers, private content, UUIDs, raw URLs, prompts, or other unbounded values.
 
 ## Operator console
 

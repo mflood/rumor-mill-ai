@@ -11,6 +11,7 @@
   "env": {
     "RUMOR_MILL_ENVIRONMENT": {"value": "production"},
     "RUMOR_MILL_MODEL_PROVIDER": {"value": "fake"},
+    "RUMOR_MILL_METRICS_API_KEY": {"generator": "secret"},
     "RUMOR_MILL_OPERATOR_API_KEY": {"generator": "secret"},
     "RUMOR_MILL_SECURE_VISITOR_COOKIE": {"value": "true"}
   },

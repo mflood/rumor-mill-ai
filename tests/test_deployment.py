@@ -11,6 +11,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import select
 
 from rumor_mill.adapters.persistence import (
@@ -47,6 +48,55 @@ def test_settings_accept_heroku_database_url(monkeypatch) -> None:  # type: igno
     monkeypatch.delenv("RUMOR_MILL_DATABASE_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgres://managed.example/rumor_mill")
     assert Settings(_env_file=None).database_url == "postgres://managed.example/rumor_mill"
+
+
+def test_production_metrics_require_dedicated_bearer_credentials(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'metrics-auth.db'}"
+    engine = create_database_engine(url)
+    from rumor_mill.adapters.persistence.models import Base
+
+    Base.metadata.create_all(engine)
+    with TestClient(
+        create_app(
+            Settings(
+                database_url=url,
+                environment="production",
+                metrics_api_key=SecretStr("metrics-secret"),
+            ),
+            create_session_factory(engine),
+        )
+    ) as client:
+        for headers in ({}, {"Authorization": "Bearer wrong-secret"}):
+            response = client.get("/metrics", headers=headers)
+            assert response.status_code == 401
+            assert "rumor_mill_" not in response.text
+
+        authorized = client.get("/metrics", headers={"Authorization": "Bearer metrics-secret"})
+        assert authorized.status_code == 200
+        assert "rumor_mill_http_requests_total" in authorized.text
+
+        health = client.get("/health/live")
+        assert health.status_code == 200
+        assert health.json() == {"status": "ok", "environment": "production"}
+    engine.dispose()
+
+
+def test_production_metrics_fail_closed_without_a_configured_key(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'metrics-disabled.db'}"
+    engine = create_database_engine(url)
+    from rumor_mill.adapters.persistence.models import Base
+
+    Base.metadata.create_all(engine)
+    with TestClient(
+        create_app(
+            Settings(database_url=url, environment="production"),
+            create_session_factory(engine),
+        )
+    ) as client:
+        response = client.get("/metrics")
+        assert response.status_code == 503
+        assert "rumor_mill_" not in response.text
+    engine.dispose()
 
 
 def test_worker_heartbeats_and_advances_persisted_runs(tmp_path: Path) -> None:
