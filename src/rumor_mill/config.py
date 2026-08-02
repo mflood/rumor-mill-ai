@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str = "postgresql://rumor_mill:rumor_mill@localhost:55432/rumor_mill"
     model_provider: str = "fake"
+    operator_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.6-luna"
     openai_timeout_seconds: float = Field(default=60.0, gt=0)
