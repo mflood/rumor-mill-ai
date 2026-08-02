@@ -1,5 +1,23 @@
 """Persistence-neutral application ports."""
 
+from rumor_mill.engine.ports.model_provider import (
+    GenerationRequest,
+    GenerationResult,
+    Message,
+    MessageRole,
+    ModelProvider,
+    StreamEvent,
+    StreamEventKind,
+    Usage,
+)
+from rumor_mill.engine.ports.provider_errors import (
+    ProviderAuthenticationError,
+    ProviderError,
+    ProviderRateLimitError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+)
 from rumor_mill.engine.ports.repositories import (
     EventRepository,
     RunRecord,
@@ -12,10 +30,24 @@ from rumor_mill.engine.ports.repositories import (
 
 __all__ = [
     "EventRepository",
+    "GenerationRequest",
+    "GenerationResult",
+    "Message",
+    "MessageRole",
+    "ModelProvider",
+    "ProviderAuthenticationError",
+    "ProviderError",
+    "ProviderRateLimitError",
+    "ProviderResponseError",
+    "ProviderTimeoutError",
+    "ProviderUnavailableError",
     "RunRecord",
     "RunRepository",
     "RunStatus",
+    "StreamEvent",
+    "StreamEventKind",
     "UnitOfWork",
+    "Usage",
     "WorldRecord",
     "WorldRepository",
 ]
