@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "id": "lighthouse",
+    "title": "The Lighthouse",
+    "summary": "Greyhaven searches for a missing apprentice while layered failures surface.",
+    "author": "Six Wands Studios",
+    "content_rating": "Teen"
+  },
+  "cast": [
+    {"id": "mara", "name": "Mara Venn", "description": "Northlight's exacting keeper.", "home_location_id": "northlight"},
+    {"id": "elias", "name": "Elias Rook", "description": "A missing lighthouse apprentice."},
+    {"id": "tomas", "name": "Tomas Vale", "description": "Greyhaven's practical repairer.", "home_location_id": "net-loft"},
+    {"id": "iris", "name": "Iris Bell", "description": "The council chair balancing scarce resources.", "home_location_id": "council-rooms"},
+    {"id": "june", "name": "June Rook", "description": "Harbor dispatcher and Elias's sister.", "home_location_id": "harbor-dispatch"},
+    {"id": "nell", "name": "Nell Sayer", "description": "Captain of the grounded Mercy Jane.", "home_location_id": "breakwater-inn"},
+    {"id": "orin", "name": "Orin Pike", "description": "Retired keeper and island repairer.", "home_location_id": "orin-cottage"}
+  ],
+  "locations": [
+    {"id": "northlight", "name": "Northlight Lighthouse", "description": "The dark lighthouse above Greyhaven.", "clue_ids": ["dark-lamp", "bypass-wire", "altered-log"], "presentation_copy": "Northlight works again above a headland still under inquiry."},
+    {"id": "harbor-dispatch", "name": "Harbor Dispatch", "description": "The island's radio and tide office.", "clue_ids": ["radio-cylinder"]},
+    {"id": "council-rooms", "name": "Council Rooms", "description": "Greyhaven's administrative rooms.", "clue_ids": ["repair-order", "diverted-budget"]},
+    {"id": "net-loft", "name": "Net Loft", "description": "A crowded harbor workshop.", "clue_ids": ["hidden-parts"]},
+    {"id": "breakwater-inn", "name": "Breakwater Inn", "description": "The island's public meeting place."},
+    {"id": "widows-steps", "name": "Widow's Steps", "description": "Broken steps above a sealed tunnel.", "clue_ids": ["bell-vibration", "tunnel-mark"]},
+    {"id": "orin-cottage", "name": "Orin's Cottage", "description": "A lamp shop and copied archive.", "clue_ids": ["survey-map"]}
+  ],
+  "initial_relationships": [
+    {"id": "mara-elias", "source_character_id": "mara", "target_character_id": "elias", "kind": "friend"},
+    {"id": "june-elias", "source_character_id": "june", "target_character_id": "elias", "kind": "family"},
+    {"id": "orin-mara", "source_character_id": "orin", "target_character_id": "mara", "kind": "professional"}
+  ],
+  "truth": [
+    {"id": "layered-failure", "statement": "The grounding resulted from multiple independent failures.", "character_ids": ["mara", "tomas", "iris", "nell"]},
+    {"id": "elias-alive", "statement": "Elias survived in the old rain cistern.", "character_ids": ["elias"], "location_ids": ["widows-steps"]},
+    {"id": "tunnel-connects", "statement": "The sealed tunnel connects Widow's Steps to the cistern.", "character_ids": ["orin"], "location_ids": ["widows-steps"]}
+  ],
+  "secrets": [
+    {"id": "tomas-bypass", "statement": "Tomas installed an unsafe bypass.", "holder_ids": ["tomas", "mara"], "known_by_ids": ["tomas", "mara"], "truth_id": "layered-failure"},
+    {"id": "june-recording", "statement": "June retained the broken transmission.", "holder_ids": ["june"], "known_by_ids": ["june"], "truth_id": "elias-alive"},
+    {"id": "nell-shortcut", "statement": "Nell sailed inside her filed course.", "holder_ids": ["nell"], "known_by_ids": ["nell"], "truth_id": "layered-failure"}
+  ],
+  "clues": [
+    {"id": "dark-lamp", "name": "Dark lamp", "description": "The Northlight lamp failed during the storm."},
+    {"id": "bypass-wire", "name": "Bypass wire", "description": "A nonstandard wire bypassed the safety cutout."},
+    {"id": "altered-log", "name": "Altered log", "description": "The station log omits a late repair."},
+    {"id": "radio-cylinder", "name": "Radio cylinder", "description": "A broken transmission mentions the old signal route."},
+    {"id": "repair-order", "name": "Repair order", "description": "The council authorized a temporary repair."},
+    {"id": "diverted-budget", "name": "Diverted budget", "description": "Maintenance funds were moved to seawall stone."},
+    {"id": "hidden-parts", "name": "Hidden parts", "description": "Removed safety parts are hidden below the loft."},
+    {"id": "bell-vibration", "name": "Bell vibration", "description": "The bell cable carries vibration from underground."},
+    {"id": "tunnel-mark", "name": "Tunnel mark", "description": "A fresh mark survives above the tide line."},
+    {"id": "survey-map", "name": "Survey map", "description": "An old survey joins the tunnel and cistern."}
+  ],
+  "beat_graph": {
+    "entry_beat_ids": ["dark-headland"],
+    "beats": [
+      {"id": "dark-headland", "title": "Dark Headland", "summary": "The Mercy Jane grounds while Northlight is dark and Elias is missing.", "character_ids": ["mara", "june", "nell"], "location_id": "harbor-dispatch", "role": "inciting-incident", "earliest_day": 1, "latest_day": 2, "discovers_clue_ids": ["dark-lamp"]},
+      {"id": "repair-trail", "title": "Repair Trail", "summary": "The inquiry connects the bypass, hidden parts, and council order.", "character_ids": ["mara", "tomas", "iris"], "location_id": "northlight", "depends_on": ["dark-headland"], "earliest_day": 2, "latest_day": 5, "discovers_clue_ids": ["bypass-wire", "hidden-parts", "repair-order"]},
+      {"id": "edited-records", "title": "Edited Records", "summary": "Conflicting records expose omissions without yet assigning sole blame.", "character_ids": ["mara", "iris", "june"], "location_id": "council-rooms", "depends_on": ["repair-trail"], "earliest_day": 4, "latest_day": 7, "discovers_clue_ids": ["altered-log", "diverted-budget"]},
+      {"id": "broken-message", "title": "Broken Message", "summary": "June releases the cylinder and the old signal route becomes a rescue lead.", "character_ids": ["june", "orin"], "location_id": "harbor-dispatch", "depends_on": ["edited-records"], "earliest_day": 7, "latest_day": 10, "reveals_secret_ids": ["june-recording"], "discovers_clue_ids": ["radio-cylinder"]},
+      {"id": "widows-echo", "title": "Widow's Echo", "summary": "Physical signs and Orin's survey reveal the cistern route.", "character_ids": ["orin", "mara"], "location_id": "widows-steps", "depends_on": ["broken-message"], "earliest_day": 9, "latest_day": 12, "establishes_truth_ids": ["tunnel-connects"], "discovers_clue_ids": ["bell-vibration", "tunnel-mark", "survey-map"]},
+      {"id": "rescue-and-record", "title": "Rescue and Record", "summary": "Elias is rescued and Greyhaven publishes the layered account.", "character_ids": ["elias", "mara", "tomas", "iris", "june", "nell", "orin"], "location_id": "widows-steps", "depends_on": ["widows-echo"], "role": "resolution", "earliest_day": 12, "latest_day": 14, "establishes_truth_ids": ["elias-alive", "layered-failure"], "reveals_secret_ids": ["tomas-bypass", "nell-shortcut"]}
+    ]
+  },
+  "routines": [
+    {"id": "mara-dawn", "character_id": "mara", "location_id": "northlight", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "05:30", "end_time": "08:30", "activity": "Reading the lens and search reports.", "public_activity": "Dawn lighthouse work."},
+    {"id": "mara-watch", "character_id": "mara", "location_id": "northlight", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "18:30", "end_time": "21:30", "activity": "Keeping evening watch.", "public_activity": "Evening lighthouse watch."},
+    {"id": "tomas-workshop", "character_id": "tomas", "location_id": "net-loft", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "06:30", "end_time": "09:00", "activity": "Opening the workshop.", "public_activity": "Workshop repairs."},
+    {"id": "iris-office", "character_id": "iris", "location_id": "council-rooms", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "09:00", "end_time": "11:00", "activity": "Holding council office.", "public_activity": "Open council office."},
+    {"id": "june-dispatch", "character_id": "june", "location_id": "harbor-dispatch", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "06:00", "end_time": "14:00", "activity": "Operating the radio.", "public_activity": "Radio watch and notices."},
+    {"id": "orin-copies", "character_id": "orin", "location_id": "orin-cottage", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "14:00", "end_time": "17:00", "activity": "Copying old station notes.", "public_activity": "Lamp repair and copying."}
+  ],
+  "travel_routes": [
+    {"id": "dispatch-council", "from_location_id": "harbor-dispatch", "to_location_id": "council-rooms", "minutes": 5},
+    {"id": "dispatch-loft", "from_location_id": "harbor-dispatch", "to_location_id": "net-loft", "minutes": 4},
+    {"id": "loft-inn", "from_location_id": "net-loft", "to_location_id": "breakwater-inn", "minutes": 6},
+    {"id": "inn-cottage", "from_location_id": "breakwater-inn", "to_location_id": "orin-cottage", "minutes": 12},
+    {"id": "dispatch-northlight", "from_location_id": "harbor-dispatch", "to_location_id": "northlight", "minutes": 40},
+    {"id": "northlight-steps", "from_location_id": "northlight", "to_location_id": "widows-steps", "minutes": 15}
+  ]
+}

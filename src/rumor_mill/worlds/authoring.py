@@ -104,6 +104,15 @@ class AuthoredSecret(AuthoringModel):
     visibility: Visibility = Visibility.ENGINE_ONLY
 
 
+class AuthoredClue(AuthoringModel):
+    """Discoverable evidence whose authored visibility must remain spoiler-safe."""
+
+    id: Slug
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=2_000)
+    visibility: Visibility = Visibility.ENGINE_ONLY
+
+
 class BeatVariant(AuthoringModel):
     """Optional presentation of a beat that preserves its narrative contract."""
 
@@ -121,6 +130,7 @@ class AuthoredBeat(AuthoringModel):
     depends_on: tuple[Slug, ...] = ()
     reveals_secret_ids: tuple[Slug, ...] = ()
     establishes_truth_ids: tuple[Slug, ...] = ()
+    discovers_clue_ids: tuple[Slug, ...] = ()
     role: Literal[
         "inciting-incident", "escalation", "reversal", "reveal", "climax", "resolution"
     ] = "escalation"
@@ -162,6 +172,7 @@ class WorldDefinition(AuthoringModel):
     locations: tuple[AuthoredLocation, ...] = Field(min_length=1)
     initial_relationships: tuple[InitialRelationship, ...] = ()
     secrets: tuple[AuthoredSecret, ...] = ()
+    clues: tuple[AuthoredClue, ...] = ()
     truth: tuple[AuthoredTruth, ...] = Field(min_length=1)
     beat_graph: BeatGraph
     routines: tuple[AuthoredRoutine, ...] = ()
@@ -235,6 +246,7 @@ def _reference_issues(world: WorldDefinition) -> tuple[WorldValidationIssue, ...
     _collect_ids(world.initial_relationships, "$.initial_relationships", issues)
     truth_ids = _collect_ids(world.truth, "$.truth", issues)
     secret_ids = _collect_ids(world.secrets, "$.secrets", issues)
+    clue_ids = _collect_ids(world.clues, "$.clues", issues)
     beat_ids = _collect_ids(world.beat_graph.beats, "$.beat_graph.beats", issues)
     _collect_ids(world.routines, "$.routines", issues)
     _collect_ids(world.travel_routes, "$.travel_routes", issues)
@@ -262,6 +274,13 @@ def _reference_issues(world: WorldDefinition) -> tuple[WorldValidationIssue, ...
                     message="location cannot contain itself",
                 )
             )
+        _check_references(
+            location.clue_ids,
+            clue_ids,
+            f"$.locations[{index}].clue_ids",
+            "clue",
+            issues,
+        )
     for index, relationship in enumerate(world.initial_relationships):
         _check_reference(
             relationship.source_character_id,
@@ -379,6 +398,13 @@ def _reference_issues(world: WorldDefinition) -> tuple[WorldValidationIssue, ...
             truth_ids,
             f"{prefix}.establishes_truth_ids",
             "truth",
+            issues,
+        )
+        _check_references(
+            beat.discovers_clue_ids,
+            clue_ids,
+            f"{prefix}.discovers_clue_ids",
+            "clue",
             issues,
         )
         _check_references(
