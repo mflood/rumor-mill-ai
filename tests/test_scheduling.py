@@ -1,7 +1,10 @@
 """Simulation clock and durable scheduling tests."""
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -15,8 +18,9 @@ from rumor_mill.adapters.persistence import (
     create_session_factory,
     seed_run,
 )
-from rumor_mill.adapters.persistence.models import JobModel
+from rumor_mill.adapters.persistence.models import JobModel, WorldModel
 from rumor_mill.engine.jobs import DurableJobWorker
+from rumor_mill.engine.lighthouse_pipeline import LighthouseWorkSource
 from rumor_mill.engine.ports import (
     ClockMode,
     JobRecord,
@@ -180,6 +184,190 @@ def test_clock_configuration_and_system_clock() -> None:
         0,
         False,
     )
+
+
+def test_lighthouse_work_respects_dependencies_windows_and_persisted_completion(
+    scheduler_database: Any,
+) -> None:
+    factory = scheduler_database
+    definition = {
+        "beat_graph": {
+            "entry_beat_ids": ["entry"],
+            "beats": [
+                {
+                    "id": "entry",
+                    "title": "Entry",
+                    "summary": "The story begins.",
+                    "character_ids": [],
+                    "location_id": "harbor",
+                    "earliest_day": 1,
+                    "latest_day": 1,
+                },
+                {
+                    "id": "dependent",
+                    "title": "Dependent",
+                    "summary": "The story continues.",
+                    "character_ids": [],
+                    "location_id": "harbor",
+                    "depends_on": ["entry"],
+                    "earliest_day": 1,
+                    "latest_day": 1,
+                },
+            ],
+        },
+        "routines": [
+            {
+                "id": "harbor-watch",
+                "character_id": "keeper",
+                "location_id": "harbor",
+                "days": [1],
+                "start_time": "00:10",
+                "end_time": "01:00",
+                "activity": "Watching the harbor.",
+                "public_activity": "Harbor watch.",
+            }
+        ],
+    }
+    world = WorldRecord(uid(1), "lighthouse", 1, definition, START)
+    run = RunRecord(
+        uid(2), uid(1), RunStatus.RUNNING, 42, START, tick_seconds=300, max_catch_up_ticks=500
+    )
+    seed_run(SqlAlchemyUnitOfWork(factory), world, run)
+    clock = FixedClock(START + timedelta(minutes=10))
+    scheduler = SimulationScheduler(
+        lambda: SqlAlchemyUnitOfWork(factory),
+        LighthouseWorkSource(lambda: SqlAlchemyUnitOfWork(factory)),
+        clock,
+    )
+
+    first = scheduler.advance(run.id)
+    assert first.jobs_enqueued == 2
+    with factory.begin() as session:
+        entry = session.scalar(
+            select(JobModel).where(JobModel.idempotency_key == f"run:{run.id}:beat:entry")
+        )
+        assert entry is not None
+        entry.status = JobStatus.COMPLETED.value
+        entry.completed_at = clock.value
+    with SqlAlchemyUnitOfWork(factory) as unit_of_work:
+        assert unit_of_work.jobs.completed_keys(run.id) == frozenset({f"run:{run.id}:beat:entry"})
+
+    clock.value = START + timedelta(minutes=15)
+    second = scheduler.advance(run.id)
+    assert second.jobs_enqueued == 1
+    with factory() as session:
+        jobs = list(session.scalars(select(JobModel).order_by(JobModel.scheduled_at)))
+        assert [job.idempotency_key.rsplit(":", 1)[-1] for job in jobs] == [
+            "entry",
+            "1",
+            "dependent",
+        ]
+        assert jobs[-1].scheduled_at.replace(tzinfo=UTC) == clock.value
+
+    # Stable keys suppress repeated work even when a later catch-up interval covers the window.
+    clock.value = START + timedelta(hours=23)
+    assert scheduler.advance(run.id).jobs_enqueued == 0
+
+
+def test_lighthouse_does_not_enqueue_a_dependency_after_its_latest_day(
+    scheduler_database: Any,
+) -> None:
+    factory = scheduler_database
+    definition = {
+        "beat_graph": {
+            "entry_beat_ids": ["late"],
+            "beats": [
+                {
+                    "id": "late",
+                    "title": "Late",
+                    "summary": "Too late.",
+                    "character_ids": [],
+                    "location_id": "harbor",
+                    "earliest_day": 1,
+                    "latest_day": 1,
+                }
+            ],
+        },
+        "routines": [],
+    }
+    world = WorldRecord(uid(1), "lighthouse", 1, definition, START)
+    run = RunRecord(uid(2), uid(1), RunStatus.RUNNING, 42, START)
+    seed_run(SqlAlchemyUnitOfWork(factory), world, run)
+    source = LighthouseWorkSource(lambda: SqlAlchemyUnitOfWork(factory))
+
+    assert tuple(source.due_work(run, after=START, through=START + timedelta(minutes=1))) == ()
+
+    assert (
+        tuple(
+            source.due_work(
+                run,
+                after=START + timedelta(days=1),
+                through=START + timedelta(days=1, minutes=5),
+            )
+        )
+        == ()
+    )
+
+
+@pytest.mark.postgres
+def test_postgres_concurrent_lighthouse_polls_enqueue_each_item_once() -> None:
+    database_url = os.environ.get("RUMOR_MILL_TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("RUMOR_MILL_TEST_DATABASE_URL is not configured")
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "head")
+    engine = create_database_engine(database_url)
+    factory = create_session_factory(engine)
+    world_id, run_id = uuid4(), uuid4()
+    definition = {
+        "beat_graph": {
+            "entry_beat_ids": ["entry"],
+            "beats": [
+                {
+                    "id": "entry",
+                    "title": "Entry",
+                    "summary": "The story begins.",
+                    "character_ids": [],
+                    "location_id": "harbor",
+                    "earliest_day": 1,
+                    "latest_day": 1,
+                }
+            ],
+        },
+        "routines": [],
+    }
+    run = RunRecord(run_id, world_id, RunStatus.RUNNING, 42, START)
+    seed_run(
+        SqlAlchemyUnitOfWork(factory),
+        WorldRecord(world_id, f"lighthouse-{world_id}", 1, definition, START),
+        run,
+    )
+    # The production source intentionally selects only the packaged Lighthouse slug.
+    with factory.begin() as session:
+        world = session.get(WorldModel, world_id)
+        assert world is not None
+        world.slug = "lighthouse"
+
+    def poll() -> int:
+        scheduler = SimulationScheduler(
+            lambda: SqlAlchemyUnitOfWork(factory),
+            LighthouseWorkSource(lambda: SqlAlchemyUnitOfWork(factory)),
+            FixedClock(START + timedelta(minutes=10)),
+        )
+        return scheduler.advance(run_id).jobs_enqueued
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            assert sum(pool.map(lambda _: poll(), range(2))) == 1
+        with factory() as session:
+            assert (
+                len(list(session.scalars(select(JobModel).where(JobModel.run_id == run_id)))) == 1
+            )
+    finally:
+        engine.dispose()
+        command.downgrade(config, "base")
 
 
 def add_job(factory, run: RunRecord, *, max_attempts: int = 3) -> UUID:  # type: ignore[no-untyped-def]
