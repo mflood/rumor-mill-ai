@@ -9,8 +9,11 @@ description = "A living AI web-toon where characters keep secrets and spread rum
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "alembic>=1.16.4,<2",
   "fastapi>=0.116.1,<1",
+  "psycopg[binary]>=3.2.9,<4",
   "pydantic-settings>=2.10.1,<3",
+  "sqlalchemy>=2.0.42,<3",
   "uvicorn[standard]>=0.35.0,<1",
 ]
 
@@ -30,6 +33,7 @@ packages = ["src/rumor_mill"]
 [tool.pytest.ini_options]
 addopts = "--strict-markers --strict-config --cov=rumor_mill --cov-report=term-missing --cov-fail-under=100"
 testpaths = ["tests"]
+markers = ["postgres: integration tests requiring RUMOR_MILL_TEST_DATABASE_URL"]
 
 [tool.coverage.run]
 branch = true
