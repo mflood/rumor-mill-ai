@@ -145,6 +145,84 @@ def test_loader_rejects_beat_graph_cycle(tmp_path: Path) -> None:
         load_world(path)
 
 
+def test_loader_accepts_timed_recoverable_beat_contract(tmp_path: Path) -> None:
+    payload = fixture_payload()
+    payload["beat_graph"]["beats"][0].update(
+        {
+            "role": "inciting-incident",
+            "earliest_day": 1,
+            "latest_day": 2,
+            "deadline_day": 2,
+            "fallback_beat_ids": ["quiet-question"],
+            "protected_truth_ids": ["key-opens-observatory"],
+            "variants": [
+                {
+                    "id": "bea-speaks-first",
+                    "condition": "Ada previously defended Bea.",
+                    "summary": "Bea asks Ada to keep the key out of the market's gossip.",
+                }
+            ],
+            "participation": "visitor-influenced",
+            "missed_beat_policy": "fallback",
+        }
+    )
+
+    beat = load_world(write_world(tmp_path, payload)).beat_graph.beats[0]
+
+    assert (beat.earliest_day, beat.latest_day, beat.deadline_day) == (1, 2, 2)
+    assert beat.fallback_beat_ids == ("quiet-question",)
+    assert beat.variants[0].id == "bea-speaks-first"
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"earliest_day": 4, "latest_day": 3}, "earliest_day must not be after latest_day"),
+        (
+            {"earliest_day": 3, "latest_day": 5, "deadline_day": 2},
+            "deadline_day must fall within the beat window",
+        ),
+        (
+            {"missed_beat_policy": "fallback", "fallback_beat_ids": []},
+            "fallback policy requires at least one fallback beat",
+        ),
+        (
+            {
+                "variants": [
+                    {"id": "same", "condition": "First condition.", "summary": "First."},
+                    {"id": "same", "condition": "Second condition.", "summary": "Second."},
+                ]
+            },
+            "variant ids must be unique within a beat",
+        ),
+    ],
+)
+def test_loader_rejects_invalid_beat_recovery_contract(
+    tmp_path: Path, updates: dict[str, Any], message: str
+) -> None:
+    payload = fixture_payload()
+    payload["beat_graph"]["beats"][0].update(updates)
+
+    with pytest.raises(WorldLoadError, match=message):
+        load_world(write_world(tmp_path, payload))
+
+
+def test_loader_rejects_unknown_fallback_and_protected_truth(tmp_path: Path) -> None:
+    payload = fixture_payload()
+    payload["beat_graph"]["beats"][0].update(
+        {
+            "fallback_beat_ids": ["missing-fallback"],
+            "protected_truth_ids": ["missing-truth"],
+        }
+    )
+
+    with pytest.raises(WorldLoadError) as error:
+        load_world(write_world(tmp_path, payload))
+
+    assert "unknown beat id 'missing-fallback'" in str(error.value)
+    assert "unknown truth id 'missing-truth'" in str(error.value)
+
+
 def test_loader_accepts_string_path(tmp_path: Path) -> None:
     path = write_world(tmp_path, fixture_payload())
 

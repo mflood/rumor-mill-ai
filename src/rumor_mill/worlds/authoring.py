@@ -104,6 +104,14 @@ class AuthoredSecret(AuthoringModel):
     visibility: Visibility = Visibility.ENGINE_ONLY
 
 
+class BeatVariant(AuthoringModel):
+    """Optional presentation of a beat that preserves its narrative contract."""
+
+    id: Slug
+    condition: str = Field(min_length=1, max_length=500)
+    summary: str = Field(min_length=1, max_length=2_000)
+
+
 class AuthoredBeat(AuthoringModel):
     id: Slug
     title: str = Field(min_length=1, max_length=200)
@@ -113,6 +121,31 @@ class AuthoredBeat(AuthoringModel):
     depends_on: tuple[Slug, ...] = ()
     reveals_secret_ids: tuple[Slug, ...] = ()
     establishes_truth_ids: tuple[Slug, ...] = ()
+    role: Literal[
+        "inciting-incident", "escalation", "reversal", "reveal", "climax", "resolution"
+    ] = "escalation"
+    earliest_day: int = Field(default=1, ge=1, le=14)
+    latest_day: int = Field(default=14, ge=1, le=14)
+    deadline_day: int | None = Field(default=None, ge=1, le=14)
+    fallback_beat_ids: tuple[Slug, ...] = ()
+    protected_truth_ids: tuple[Slug, ...] = ()
+    variants: tuple[BeatVariant, ...] = ()
+    participation: Literal["autonomous", "visitor-influenced"] = "autonomous"
+    missed_beat_policy: Literal["pause", "accelerate", "fallback"] = "accelerate"
+
+    @model_validator(mode="after")
+    def validate_timing_and_recovery(self) -> Self:
+        if self.earliest_day > self.latest_day:
+            raise ValueError("earliest_day must not be after latest_day")
+        if self.deadline_day is not None and not (
+            self.earliest_day <= self.deadline_day <= self.latest_day
+        ):
+            raise ValueError("deadline_day must fall within the beat window")
+        if self.missed_beat_policy == "fallback" and not self.fallback_beat_ids:
+            raise ValueError("fallback policy requires at least one fallback beat")
+        if len({variant.id for variant in self.variants}) != len(self.variants):
+            raise ValueError("variant ids must be unique within a beat")
+        return self
 
 
 class BeatGraph(AuthoringModel):
@@ -328,6 +361,13 @@ def _reference_issues(world: WorldDefinition) -> tuple[WorldValidationIssue, ...
         )
         _check_references(beat.depends_on, beat_ids, f"{prefix}.depends_on", "beat", issues)
         _check_references(
+            beat.fallback_beat_ids,
+            beat_ids,
+            f"{prefix}.fallback_beat_ids",
+            "beat",
+            issues,
+        )
+        _check_references(
             beat.reveals_secret_ids,
             secret_ids,
             f"{prefix}.reveals_secret_ids",
@@ -338,6 +378,13 @@ def _reference_issues(world: WorldDefinition) -> tuple[WorldValidationIssue, ...
             beat.establishes_truth_ids,
             truth_ids,
             f"{prefix}.establishes_truth_ids",
+            "truth",
+            issues,
+        )
+        _check_references(
+            beat.protected_truth_ids,
+            truth_ids,
+            f"{prefix}.protected_truth_ids",
             "truth",
             issues,
         )
