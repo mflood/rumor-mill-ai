@@ -1,7 +1,7 @@
 """Integration coverage for the stable simulation service API."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
@@ -11,6 +11,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence import create_database_engine, create_session_factory
@@ -297,6 +298,136 @@ def test_daily_recap_is_public_only_cached_and_operator_editable(api) -> None:  
         json={"headline": "No", "dek": "Wrong kind"},
     )
     assert wrong_kind.status_code == 404
+
+
+def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    definition = world_payload()
+    cast_items = cast(list[dict[str, object]], definition["cast"])
+    cast_items[0]["public_voice"] = "Short observations followed by a careful question."
+    cast_items.append({"id": "cy", "name": "Cy", "description": "A stranger off the ferry."})
+    relationships = cast(list[dict[str, object]], definition["initial_relationships"])
+    relationships[0]["visibility"] = "public"
+    relationships.append(
+        {
+            "id": "bea-ada-private",
+            "source_character_id": "bea",
+            "target_character_id": "ada",
+            "kind": "professional",
+            "visibility": "participants",
+        }
+    )
+    cast(list[dict[str, object]], definition.setdefault("routines", [])).append(
+        {
+            "id": "ada-market-day",
+            "character_id": "ada",
+            "location_id": "market",
+            "days": list(range(1, 15)),
+            "start_time": "00:00",
+            "end_time": "23:59",
+            "activity": "Sorting private courier notes.",
+            "public_activity": "Making the morning rounds.",
+        }
+    )
+    initialized = client.post(
+        "/api/v1/worlds/lantern-market/runs",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"definition": definition, "seed": 7, "clock_mode": "manual"},
+    )
+    run_id = UUID(str(initialized.json()["id"]))
+    visitor_id = UUID(str(start_visitor_session(client)["visitor_id"]))
+    assert (
+        client.post(
+            f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
+        ).status_code
+        == 201
+    )
+
+    now = datetime.now(UTC)
+    with factory() as database:
+        own_state = database.scalar(
+            select(VisitorCharacterStateModel).where(
+                VisitorCharacterStateModel.visitor_id == visitor_id,
+                VisitorCharacterStateModel.run_id == run_id,
+                VisitorCharacterStateModel.character_id == "ada",
+            )
+        )
+        assert own_state is not None
+        own_state.relationship_summary = "Ada now recognizes your careful questions."
+        own_state.trust = 0.875
+        own_state.memories = [
+            {"id": str(uuid4()), "content": "You asked Ada about the west stalls.", "salience": 0.8}
+        ]
+        other = VisitorModel(
+            token_hash="f" * 64,
+            last_seen_at=now,
+            expires_at=now + timedelta(days=1),
+        )
+        database.add(other)
+        database.flush()
+        database.add_all(
+            [
+                VisitorCharacterStateModel(
+                    visitor_id=other.id,
+                    run_id=run_id,
+                    character_id="ada",
+                    relationship_summary="OTHER VISITOR PRIVATE NOTE",
+                    trust=1,
+                    memories=[{"content": "OTHER VISITOR MEMORY"}],
+                    updated_at=now,
+                ),
+                ArtifactModel(
+                    id=uuid4(),
+                    run_id=run_id,
+                    kind="daily_recap",
+                    title="Published recap",
+                    body="Bea appeared in public.",
+                    generated_at=now,
+                    source_ids=[],
+                    payload={
+                        "visibility": "public",
+                        "recap": {"suggested_character_ids": ["bea"], "panels": []},
+                    },
+                ),
+                ArtifactModel(
+                    id=uuid4(),
+                    run_id=run_id,
+                    kind="daily_recap",
+                    title="Private recap",
+                    body="Not published.",
+                    generated_at=now,
+                    source_ids=[],
+                    payload={
+                        "visibility": "engine_only",
+                        "recap": {"suggested_character_ids": ["ada"], "panels": []},
+                    },
+                ),
+            ]
+        )
+        database.commit()
+
+    ledger = client.get(f"/lighthouse/runs/{run_id}/people")
+    assert ledger.status_code == 200
+    assert "Ada now recognizes your careful questions" in ledger.text
+    assert "Seen in a published dispatch. You have not spoken yet." in ledger.text
+    profile = client.get(f"/lighthouse/runs/{run_id}/people/ada")
+    assert profile.status_code == 200
+    assert "Short observations followed by a careful question" in profile.text
+    assert "At Lantern Market · Making the morning rounds" in profile.text
+    assert "Ada now recognizes your careful questions" in profile.text
+    assert "You asked Ada about the west stalls" in profile.text
+    assert ">Bea</a>" in profile.text
+    assert "0.875" not in profile.text
+    assert "OTHER VISITOR" not in profile.text
+    assert "possesses the observatory key" not in profile.text
+    unknown = client.get(f"/lighthouse/runs/{run_id}/people/bea")
+    assert "published dispatch, but have not spoken" in unknown.text
+    assert "No private encounters yet" in unknown.text
+    unencountered = client.get(f"/lighthouse/runs/{run_id}/people/cy")
+    assert "You have not encountered this person yet" in unencountered.text
+    assert "Whereabouts unknown" in unencountered.text
+    assert "private line cannot be opened" in unencountered.text
+    assert client.get(f"/lighthouse/runs/{run_id}/people/nobody").status_code == 404
 
 
 def test_authentication_validation_and_not_found_errors(api) -> None:  # type: ignore[no-untyped-def]
