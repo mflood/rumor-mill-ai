@@ -9,6 +9,13 @@ The MVP's system boundaries, data flow, and non-goals are documented in the
 Worlds are defined as validated, versioned JSON. See the
 [world-authoring format](docs/world-authoring-format.md) and its minimal fixture.
 
+Validate the complete Lighthouse world, seed a deterministic run into an empty database, and write
+a fourteen-day zero-cost smoke transcript with one command:
+
+```shell
+make seed-lighthouse
+```
+
 The first authored world's objective canon and narrative constraints live in the
 [Lighthouse story bible](docs/worlds/lighthouse/story-bible.md).
 Its mobile-first visitor journeys and launch requirements are defined in the

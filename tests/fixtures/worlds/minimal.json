@@ -60,6 +60,13 @@
       "truth_id": "key-opens-observatory"
     }
   ],
+  "clues": [
+    {
+      "id": "market-ledger",
+      "name": "Market ledger",
+      "description": "A ledger recording deliveries to the archive."
+    }
+  ],
   "beat_graph": {
     "entry_beat_ids": ["hidden-key"],
     "beats": [
