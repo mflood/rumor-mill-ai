@@ -28,6 +28,35 @@ class EvidenceStance(StrEnum):
     AMBIGUOUS = "ambiguous"
 
 
+class BeliefRule(StrEnum):
+    DIRECT_OBSERVATION = "direct_observation"
+    TESTIMONY = "testimony"
+    DENIAL = "denial"
+    CORRECTION = "correction"
+
+
+class BeliefState(StrEnum):
+    SETTLED = "settled"
+    UNRESOLVED_CONTRADICTION = "unresolved_contradiction"
+
+
+class BeliefUpdate(ContractModel):
+    """An inspectable explanation of one immutable belief transition."""
+
+    rule: BeliefRule
+    evidence_id: EvidenceId
+    previous_confidence: Confidence
+    new_confidence: Confidence
+    effective_strength: Confidence
+    occurred_at: datetime
+    explanation: str = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def require_aware_timestamp(self) -> Self:
+        _require_aware(self.occurred_at, "occurred_at")
+        return self
+
+
 class Claim(ContractModel):
     """A proposition that may or may not agree with canon."""
 
@@ -50,6 +79,7 @@ class Evidence(ContractModel):
     strength: Confidence
     source_event_id: EventId | None = None
     source_memory_id: MemoryId | None = None
+    source_character_id: CharacterId | None = None
     provenance: Provenance
     visibility: Visibility
     lifecycle: Lifecycle
@@ -71,6 +101,10 @@ class Belief(ContractModel):
     claim_id: ClaimId
     confidence: Confidence
     evidence_ids: tuple[EvidenceId, ...] = ()
+    supporting_evidence_ids: tuple[EvidenceId, ...] = ()
+    conflicting_evidence_ids: tuple[EvidenceId, ...] = ()
+    state: BeliefState = BeliefState.SETTLED
+    update_history: tuple[BeliefUpdate, ...] = ()
     formed_at: datetime
     updated_at: datetime
     provenance: Provenance
@@ -85,6 +119,19 @@ class Belief(ContractModel):
             raise ValueError("updated_at cannot be before formed_at")
         if len(set(self.evidence_ids)) != len(self.evidence_ids):
             raise ValueError("evidence_ids must be unique")
+        if self.evidence_ids and not (
+            self.supporting_evidence_ids or self.conflicting_evidence_ids
+        ):
+            object.__setattr__(self, "supporting_evidence_ids", self.evidence_ids)
+        classified = self.supporting_evidence_ids + self.conflicting_evidence_ids
+        if len(set(classified)) != len(classified):
+            raise ValueError("supporting and conflicting evidence must be unique")
+        if set(classified) != set(self.evidence_ids):
+            raise ValueError("all evidence must be classified as supporting or conflicting")
+        if self.state is BeliefState.UNRESOLVED_CONTRADICTION and not (
+            self.supporting_evidence_ids and self.conflicting_evidence_ids
+        ):
+            raise ValueError("unresolved contradiction requires evidence on both sides")
         return self
 
 

@@ -9,15 +9,25 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
+    BeliefModel,
     ClaimModel,
     EventModel,
+    EvidenceModel,
     JobModel,
     MemoryModel,
     RunModel,
     SceneModel,
     WorldModel,
 )
-from rumor_mill.engine.domain import Claim, Event, Memory, PresentationArtifact, Scene
+from rumor_mill.engine.domain import (
+    Belief,
+    Claim,
+    Event,
+    Evidence,
+    Memory,
+    PresentationArtifact,
+    Scene,
+)
 from rumor_mill.engine.ports import (
     ClockMode,
     GeneratedSceneRecord,
@@ -345,6 +355,66 @@ class SqlAlchemyMemoryRepository:
         )
 
 
+class SqlAlchemyBeliefRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add_evidence(self, run_id: UUID, evidence: Evidence) -> None:
+        self._session.add(
+            EvidenceModel(
+                id=evidence.id,
+                run_id=run_id,
+                claim_id=evidence.claim_id,
+                stance=evidence.stance.value,
+                payload=evidence.model_dump(mode="json"),
+            )
+        )
+
+    def add_version(self, run_id: UUID, belief: Belief) -> None:
+        current_version = self._session.scalar(
+            select(func.max(BeliefModel.version)).where(
+                BeliefModel.run_id == run_id,
+                BeliefModel.character_id == belief.character_id,
+                BeliefModel.claim_id == belief.claim_id,
+            )
+        )
+        self._session.add(
+            BeliefModel(
+                id=belief.id,
+                run_id=run_id,
+                character_id=belief.character_id,
+                claim_id=belief.claim_id,
+                confidence=belief.confidence,
+                version=1 if current_version is None else current_version + 1,
+                payload=belief.model_dump(mode="json"),
+            )
+        )
+
+    def get_current(self, run_id: UUID, character_id: UUID, claim_id: UUID) -> Belief | None:
+        model = self._session.scalar(
+            select(BeliefModel)
+            .where(
+                BeliefModel.run_id == run_id,
+                BeliefModel.character_id == character_id,
+                BeliefModel.claim_id == claim_id,
+            )
+            .order_by(BeliefModel.version.desc())
+            .limit(1)
+        )
+        return None if model is None else Belief.model_validate(model.payload)
+
+    def list_evidence(self, run_id: UUID, belief: Belief) -> tuple[Evidence, ...]:
+        if not belief.evidence_ids:
+            return ()
+        models = self._session.scalars(
+            select(EvidenceModel).where(
+                EvidenceModel.run_id == run_id, EvidenceModel.id.in_(belief.evidence_ids)
+            )
+        )
+        by_id = {model.id: Evidence.model_validate(model.payload) for model in models}
+        return tuple(by_id[evidence_id] for evidence_id in belief.evidence_ids)
+
+
 class SqlAlchemyUnitOfWork:
     """One explicit SQLAlchemy transaction behind the engine unit-of-work port."""
 
@@ -356,6 +426,7 @@ class SqlAlchemyUnitOfWork:
         self.jobs = SqlAlchemyJobRepository(self._session)
         self.scenes = SqlAlchemySceneRepository(self._session)
         self.memories = SqlAlchemyMemoryRepository(self._session)
+        self.beliefs = SqlAlchemyBeliefRepository(self._session)
         self._finished = False
 
     def __enter__(self) -> "SqlAlchemyUnitOfWork":

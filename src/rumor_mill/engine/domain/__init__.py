@@ -19,13 +19,25 @@ from rumor_mill.engine.domain.base import (
 )
 from rumor_mill.engine.domain.canon import Event, Scene
 from rumor_mill.engine.domain.presentation import ArtifactKind, PresentationArtifact
-from rumor_mill.engine.domain.subjective import Belief, Claim, Evidence, EvidenceStance, Memory
+from rumor_mill.engine.domain.subjective import (
+    Belief,
+    BeliefRule,
+    BeliefState,
+    BeliefUpdate,
+    Claim,
+    Evidence,
+    EvidenceStance,
+    Memory,
+)
 from rumor_mill.engine.domain.world import Character, Location, Relationship, RelationshipKind
 
 __all__ = [
     "ArtifactKind",
     "Belief",
     "BeliefId",
+    "BeliefRule",
+    "BeliefState",
+    "BeliefUpdate",
     "Character",
     "CharacterId",
     "Claim",
