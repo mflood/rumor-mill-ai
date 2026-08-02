@@ -4,7 +4,7 @@ RUMOR_MILL_API_PORT ?= 8787
 RUMOR_MILL_POSTGRES_PORT ?= 55432
 export RUMOR_MILL_API_PORT RUMOR_MILL_POSTGRES_PORT RUMOR_MILL_DATABASE_URL
 
-.PHONY: setup run test lint format ci db-up db-down db-migrate db-rollback seed-lighthouse
+.PHONY: setup run test lint format ci eval db-up db-down db-migrate db-rollback seed-lighthouse
 
 setup:
 	uv sync --frozen
@@ -30,6 +30,12 @@ ci:
 	uv run ruff check .
 	uv run mypy
 	uv run pytest
+	$(MAKE) eval
+
+eval:
+	uv run python -m rumor_mill.evals evals/lighthouse-v1.json \
+		--json-report artifacts/evals/report.json \
+		--markdown-report artifacts/evals/report.md
 
 db-up:
 	docker compose up -d postgres
