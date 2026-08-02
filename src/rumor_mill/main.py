@@ -628,6 +628,7 @@ def create_app(
             "web": "ok",
             "database": "ok",
             "worker": "ok",
+            "story_pipeline": "ok",
             "provider": "ok",
         }
         try:
@@ -649,11 +650,24 @@ def create_app(
             if last_heartbeat is None:
                 if settings.environment == "production":
                     components["worker"] = "degraded"
+                    components["story_pipeline"] = "degraded"
             elif _aware(last_heartbeat) < stale_before:
                 components["worker"] = "degraded"
+                components["story_pipeline"] = "degraded"
+            operational_pipeline = database.scalar(
+                select(WorkerHeartbeatModel.worker_id)
+                .where(
+                    WorkerHeartbeatModel.story_pipeline_ready.is_(True),
+                    WorkerHeartbeatModel.last_seen_at >= stale_before,
+                )
+                .limit(1)
+            )
+            if operational_pipeline is None and settings.environment == "production":
+                components["story_pipeline"] = "degraded"
         except Exception:  # pragma: no cover - requires a runtime database outage
             components["database"] = "degraded"
             components["worker"] = "degraded"
+            components["story_pipeline"] = "degraded"
         if settings.provider_health_required and (
             settings.model_provider == "openai" and settings.openai_api_key is None
         ):
@@ -971,6 +985,16 @@ def create_app(
         heartbeat = database.scalar(select(func.max(WorkerHeartbeatModel.last_seen_at)))
         stale_before = datetime.now(UTC) - timedelta(seconds=settings.worker_stale_after_seconds)
         worker_ok = heartbeat is not None and _aware(heartbeat) >= stale_before
+        pipeline = database.scalar(
+            select(WorkerHeartbeatModel)
+            .where(
+                WorkerHeartbeatModel.story_pipeline_ready.is_(True),
+                WorkerHeartbeatModel.last_seen_at >= stale_before,
+            )
+            .order_by(WorkerHeartbeatModel.last_seen_at.desc())
+            .limit(1)
+        )
+        pipeline_ok = pipeline is not None
         story = available_story(database)
         run_cards = []
         for run in runs:
@@ -988,7 +1012,16 @@ def create_app(
             )
         notice = f'<p class="notice">{escape(message)}</p>' if message else ""
         availability = "Playable Lighthouse season found" if story else "No playable season"
-        body = f"""<form class="inline" action="/operator/session/logout" method="post" style="float:right"><button>Sign out</button></form><p class="muted">Rumor Mill</p><h1>Live story console</h1>{notice}<div class="grid"><div class="card"><strong>Infrastructure</strong><br><span class="ok">Web and database connected</span></div><div class="card"><strong>Story availability</strong><br><span class="{"ok" if story else "bad"}">{availability}</span></div><div class="card"><strong>Worker</strong><br><span class="{"ok" if worker_ok else "bad"}">{"Fresh" if worker_ok else "Missing or stale"}</span><br><small>{_aware(heartbeat).isoformat() if heartbeat else "No heartbeat"}</small></div><div class="card"><strong>Runs</strong><br>{len(runs)}</div></div>{"".join(run_cards) or "<section><h2>Empty production state</h2><p>No worlds or runs exist. Run the documented Lighthouse bootstrap recovery command.</p></section>"}"""
+        pipeline_detail = (
+            f"Operational · last output {_aware(pipeline.last_story_job_completed_at).isoformat()}"
+            if pipeline is not None and pipeline.last_story_job_completed_at is not None
+            else (
+                "Operational · awaiting first due story job"
+                if pipeline_ok
+                else "Clock-only or unavailable"
+            )
+        )
+        body = f"""<form class="inline" action="/operator/session/logout" method="post" style="float:right"><button>Sign out</button></form><p class="muted">Rumor Mill</p><h1>Live story console</h1>{notice}<div class="grid"><div class="card"><strong>Infrastructure</strong><br><span class="ok">Web and database connected</span></div><div class="card"><strong>Story availability</strong><br><span class="{"ok" if story else "bad"}">{availability}</span></div><div class="card"><strong>Worker clock</strong><br><span class="{"ok" if worker_ok else "bad"}">{"Fresh" if worker_ok else "Missing or stale"}</span><br><small>{_aware(heartbeat).isoformat() if heartbeat else "No heartbeat"}</small></div><div class="card"><strong>Story pipeline</strong><br><span class="{"ok" if pipeline_ok else "bad"}">{pipeline_detail}</span></div><div class="card"><strong>Runs</strong><br>{len(runs)}</div></div>{"".join(run_cards) or "<section><h2>Empty production state</h2><p>No worlds or runs exist. Run the documented Lighthouse bootstrap recovery command.</p></section>"}"""
         return operator_page("Live story console", body)
 
     @app.get(

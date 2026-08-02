@@ -16,6 +16,8 @@ from rumor_mill.adapters.persistence import (
 )
 from rumor_mill.adapters.persistence.models import WorkerHeartbeatModel
 from rumor_mill.config import Settings, get_settings
+from rumor_mill.engine.jobs import DurableJobWorker
+from rumor_mill.engine.lighthouse_pipeline import LighthouseWorkSource, lighthouse_handlers
 from rumor_mill.engine.scheduling import SimulationScheduler
 from rumor_mill.observability import configure_json_logging
 
@@ -57,14 +59,25 @@ class SimulationWorker:
         with self._session_factory.begin() as database:
             heartbeat = database.get(WorkerHeartbeatModel, self._worker_id)
             if heartbeat is None:
-                database.add(WorkerHeartbeatModel(worker_id=self._worker_id, last_seen_at=now))
+                database.add(
+                    WorkerHeartbeatModel(
+                        worker_id=self._worker_id,
+                        last_seen_at=now,
+                        story_pipeline_ready=True,
+                    )
+                )
             else:
                 heartbeat.last_seen_at = now
+                heartbeat.story_pipeline_ready = True
 
         with self._unit_of_work() as unit_of_work:
             runs = unit_of_work.runs.list_active(limit=self._run_batch_size)
 
-        scheduler = SimulationScheduler(self._unit_of_work, clock=_WorkerClock(self._clock))
+        scheduler = SimulationScheduler(
+            self._unit_of_work,
+            LighthouseWorkSource(self._unit_of_work),
+            clock=_WorkerClock(self._clock),
+        )
         advanced = 0
         for run in runs:
             try:
@@ -83,6 +96,26 @@ class SimulationWorker:
                         "catch_up_limited": result.catch_up_limited,
                     },
                 )
+
+        job_worker = DurableJobWorker(
+            self._unit_of_work,
+            lighthouse_handlers(),
+            worker_id=self._worker_id,
+            clock=self._clock,
+        )
+        completed = 0
+        for _ in range(self._run_batch_size):
+            job_result = job_worker.run_once()
+            if job_result.job is None:
+                break
+            if job_result.completed:
+                completed += 1
+        if completed:
+            with self._session_factory.begin() as database:
+                heartbeat = database.get(WorkerHeartbeatModel, self._worker_id)
+                assert heartbeat is not None
+                heartbeat.last_story_job_completed_at = self._clock()
+            logger.info("story_jobs_completed", extra={"jobs_completed": completed})
         return advanced
 
     def run_forever(self, stop: Event | None = None) -> None:

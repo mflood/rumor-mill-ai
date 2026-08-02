@@ -117,6 +117,7 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
         "web": "ok",
         "database": "ok",
         "worker": "ok",
+        "story_pipeline": "ok",
         "provider": "ok",
     }
     request = client.get("/health/live", headers={"X-Request-ID": "trace-123"})

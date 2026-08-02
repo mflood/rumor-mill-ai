@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -304,6 +305,10 @@ class WorkerHeartbeatModel(Base):
 
     worker_id: Mapped[str] = mapped_column(String(200), primary_key=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    story_pipeline_ready: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    last_story_job_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class OperatorAuditModel(IdMixin, CreatedMixin, Base):
