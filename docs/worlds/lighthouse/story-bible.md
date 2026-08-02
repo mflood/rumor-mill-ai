@@ -6,8 +6,9 @@ Last revised: 2026-08-02
 
 This document is the source of truth for the Lighthouse season. Generated scenes may obscure,
 misinterpret, or lie about these facts through a character, but may not contradict them in
-objective narration. Character and relationship details may be expanded elsewhere; if an expansion
-conflicts with this bible, this bible wins until deliberately revised.
+objective narration. Character and relationship details are expanded in the
+[playable cast and relationship network](cast-and-relationships.md); if that expansion conflicts
+with this bible, this bible wins until deliberately revised.
 
 ## Story promise
 
