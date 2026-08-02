@@ -290,6 +290,61 @@ class SqlAlchemySceneRepository:
         return 0 if current is None else current + 1
 
 
+class SqlAlchemyMemoryRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, run_id: UUID, memory: Memory) -> None:
+        self._session.add(
+            MemoryModel(
+                id=memory.id,
+                run_id=run_id,
+                character_id=memory.character_id,
+                event_id=memory.source_event_id,
+                claim_id=memory.source_claim_id,
+                remembered_at=memory.remembered_at,
+                content=memory.content,
+                confidence=memory.confidence,
+                payload=memory.model_dump(mode="json"),
+            )
+        )
+
+    def find_by_source(
+        self,
+        run_id: UUID,
+        character_id: UUID,
+        *,
+        event_id: UUID | None = None,
+        claim_id: UUID | None = None,
+    ) -> Memory | None:
+        if (event_id is None) == (claim_id is None):
+            raise ValueError("exactly one memory source is required")
+        query = select(MemoryModel).where(
+            MemoryModel.run_id == run_id,
+            MemoryModel.character_id == character_id,
+        )
+        query = query.where(
+            MemoryModel.event_id == event_id
+            if event_id is not None
+            else MemoryModel.claim_id == claim_id
+        )
+        model = self._session.scalar(query.order_by(MemoryModel.remembered_at).limit(1))
+        return None if model is None else Memory.model_validate(model.payload)
+
+    def list_for_character(self, run_id: UUID, character_id: UUID) -> tuple[Memory, ...]:
+        return tuple(
+            Memory.model_validate(model.payload)
+            for model in self._session.scalars(
+                select(MemoryModel)
+                .where(
+                    MemoryModel.run_id == run_id,
+                    MemoryModel.character_id == character_id,
+                )
+                .order_by(MemoryModel.remembered_at.desc(), MemoryModel.id)
+            )
+        )
+
+
 class SqlAlchemyUnitOfWork:
     """One explicit SQLAlchemy transaction behind the engine unit-of-work port."""
 
@@ -300,6 +355,7 @@ class SqlAlchemyUnitOfWork:
         self.events = SqlAlchemyEventRepository(self._session)
         self.jobs = SqlAlchemyJobRepository(self._session)
         self.scenes = SqlAlchemySceneRepository(self._session)
+        self.memories = SqlAlchemyMemoryRepository(self._session)
         self._finished = False
 
     def __enter__(self) -> "SqlAlchemyUnitOfWork":
