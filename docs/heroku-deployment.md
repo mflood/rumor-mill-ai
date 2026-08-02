@@ -8,9 +8,10 @@ Rumor Mill runs as three declared process types:
 - `worker` advances every running wall-clock simulation from durable Postgres state.
 
 The worker writes a heartbeat on every poll. `/health/live` confirms the web process is alive;
-`/health/ready` verifies Postgres, worker freshness, and required provider configuration without
-depending on story content. `/health/product` separately validates the Lighthouse world and
-requires a running season; it returns 503 with a low-cardinality `reason` when play is unavailable.
+`/health/ready` verifies Postgres, worker freshness, autonomous story-pipeline composition, and
+required provider configuration without depending on story content. `/health/product` separately
+validates the Lighthouse world and requires a running season; it returns 503 with a low-cardinality
+`reason` when play is unavailable.
 A dyno restart is safe: simulation time and the wall-time anchor are committed in Postgres, catch-up is
 bounded by each run's `max_catch_up_ticks`, and scheduled jobs use unique idempotency keys.
 
@@ -95,6 +96,28 @@ curl --fail-with-body \
 Local development does not require a metrics credential, so `curl http://127.0.0.1:8787/metrics`
 remains the standard local workflow. Health endpoints stay public and expose only liveness,
 coarse component readiness, and coarse product availability.
+
+## Autonomous story startup and recovery
+
+The release bootstrap starts a Lighthouse season at its current wall time. The first authored beat
+is due after five simulation minutes; with the default five-second worker poll it should normally
+appear as a completed `lighthouse_story` job and public `story_card` within six minutes of a new
+season. Later beats use their earliest authored story day, while routine scenes use their authored
+day and start time. Idempotency keys make every beat and routine occurrence enqueue exactly once.
+
+If the clock advances but no output appears:
+
+1. Check `/health/ready`. `worker=ok` with `story_pipeline=degraded` identifies a fresh clock-only
+   or outdated worker; redeploy the current worker image and confirm the migration ran.
+2. Open `/operator/console`. The Story pipeline card must say `Operational`; it also shows whether
+   it is awaiting the first due job or when it last completed story output.
+3. Inspect the run's job counts and recovery page. Pending jobs indicate claim/execution trouble;
+   failed or dead jobs include a safe error summary and the existing explicit retry action.
+4. Confirm the run is `running`, its clock mode is `wall`, and its simulation time has crossed the
+   five-minute first-beat boundary. A paused/manual run will not autonomously advance.
+5. If no jobs exist after that boundary, run the idempotent Lighthouse bootstrap command, verify the
+   stored world's beat graph and routines, and restart the worker. Do not manually advance unless
+   diagnosing a clock problem; normal production output requires no API invocation.
 
 Rotate the production credential whenever monitoring access changes and at least every 90 days:
 

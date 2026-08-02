@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
 from typing import Self
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from alembic import command
@@ -20,11 +20,19 @@ from rumor_mill.adapters.persistence import (
     create_session_factory,
     seed_run,
 )
-from rumor_mill.adapters.persistence.models import RunModel, WorkerHeartbeatModel, WorldModel
+from rumor_mill.adapters.persistence.models import (
+    ArtifactModel,
+    JobModel,
+    RunModel,
+    SceneModel,
+    WorkerHeartbeatModel,
+    WorldModel,
+)
 from rumor_mill.bootstrap import _bootstrap_session
 from rumor_mill.config import Settings
 from rumor_mill.deployment import smoke
-from rumor_mill.engine.ports import RunRecord, RunStatus, WorldRecord
+from rumor_mill.engine.lighthouse_pipeline import LighthouseStoryHandler
+from rumor_mill.engine.ports import JobRecord, JobStatus, RunRecord, RunStatus, WorldRecord
 from rumor_mill.main import create_app
 from rumor_mill.worker import SimulationWorker, main, worker_id
 
@@ -164,9 +172,161 @@ def test_production_readiness_requires_a_worker_heartbeat(tmp_path: Path) -> Non
         heartbeat = database.get(WorkerHeartbeatModel, "stale-worker")
         assert heartbeat is not None
         heartbeat.last_seen_at = datetime.now(UTC)
+        heartbeat.story_pipeline_ready = True
     ready = client.get("/health/ready")
     assert ready.status_code == 200
     assert ready.json()["components"]["worker"] == "ok"
+    assert ready.json()["components"]["story_pipeline"] == "ok"
+    engine.dispose()
+
+
+def test_production_shaped_bootstrap_advances_executes_and_publishes_once(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'autonomous-story.db'}"
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    engine = create_database_engine(url)
+    factory = create_session_factory(engine)
+    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    with factory.begin() as database:
+        bootstrapped = _bootstrap_session(database, definition)
+        run = database.get(RunModel, bootstrapped.run_id)
+        assert run is not None
+        started_at = run.started_at.replace(tzinfo=UTC)
+
+    now = started_at + timedelta(minutes=10)
+    worker = SimulationWorker(
+        factory, worker_id="worker.story", run_batch_size=1, clock=lambda: now
+    )
+    assert worker.poll_once() == 1
+    assert worker.poll_once() == 0
+
+    with factory() as database:
+        jobs = list(
+            database.scalars(select(JobModel).where(JobModel.run_id == bootstrapped.run_id))
+        )
+        artifacts = list(
+            database.scalars(
+                select(ArtifactModel).where(ArtifactModel.run_id == bootstrapped.run_id)
+            )
+        )
+        scenes = list(
+            database.scalars(select(SceneModel).where(SceneModel.run_id == bootstrapped.run_id))
+        )
+        heartbeat = database.get(WorkerHeartbeatModel, "worker.story")
+        assert len(jobs) == 1
+        assert jobs[0].status == "completed"
+        assert len(scenes) == 1
+        assert len(artifacts) == 1
+        assert artifacts[0].kind == "story_card"
+        assert artifacts[0].title == "Dark Headland"
+        assert heartbeat is not None and heartbeat.story_pipeline_ready
+        assert heartbeat.last_story_job_completed_at is not None
+    engine.dispose()
+
+
+def test_worker_executes_authored_routine_output(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'autonomous-routine.db'}"
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    engine = create_database_engine(url)
+    factory = create_session_factory(engine)
+    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    with factory.begin() as database:
+        bootstrapped = _bootstrap_session(database, definition)
+        run = database.get(RunModel, bootstrapped.run_id)
+        assert run is not None
+        run.max_catch_up_ticks = 100
+        started_at = run.started_at.replace(tzinfo=UTC)
+
+    worker = SimulationWorker(
+        factory,
+        worker_id="worker.routine",
+        clock=lambda: started_at + timedelta(hours=5, minutes=35),
+    )
+    assert worker.poll_once() == 1
+    with factory() as database:
+        titles = set(
+            database.scalars(
+                select(ArtifactModel.title).where(ArtifactModel.run_id == bootstrapped.run_id)
+            )
+        )
+        assert "Dark Headland" in titles
+        assert "Dawn lighthouse work." in titles
+    engine.dispose()
+
+
+def test_story_job_failure_leaves_pipeline_fresh_for_retry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    url = f"sqlite:///{tmp_path / 'story-retry.db'}"
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    engine = create_database_engine(url)
+    factory = create_session_factory(engine)
+    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    with factory.begin() as database:
+        bootstrapped = _bootstrap_session(database, definition)
+        run = database.get(RunModel, bootstrapped.run_id)
+        assert run is not None
+        started_at = run.started_at.replace(tzinfo=UTC)
+
+    def broken_handlers():  # type: ignore[no-untyped-def]
+        def broken(job):  # type: ignore[no-untyped-def]
+            del job
+            raise RuntimeError("story provider unavailable")
+
+        return {"lighthouse_story": broken}
+
+    monkeypatch.setattr("rumor_mill.worker.lighthouse_handlers", broken_handlers)
+    worker = SimulationWorker(
+        factory,
+        worker_id="worker.retry",
+        clock=lambda: started_at + timedelta(minutes=10),
+    )
+    assert worker.poll_once() == 1
+    with factory() as database:
+        job = database.scalar(select(JobModel).where(JobModel.run_id == bootstrapped.run_id))
+        heartbeat = database.get(WorkerHeartbeatModel, "worker.retry")
+        assert job is not None and job.status == "failed"
+        assert heartbeat is not None and heartbeat.story_pipeline_ready
+        assert heartbeat.last_story_job_completed_at is None
+    engine.dispose()
+
+
+def test_story_mutation_rejects_a_deleted_run(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'deleted-run.db'}"
+    engine = create_database_engine(url)
+    from rumor_mill.adapters.persistence.models import Base
+
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    missing_run_id = uuid4()
+    job = JobRecord(
+        id=uuid4(),
+        run_id=missing_run_id,
+        idempotency_key="deleted-run-story",
+        kind="lighthouse_story",
+        status=JobStatus.RUNNING,
+        scheduled_at=START,
+        payload={
+            "story_kind": "beat",
+            "id": "missing",
+            "title": "Missing run",
+            "summary": "This output cannot be committed.",
+            "character_ids": [],
+            "location_id": "northlight",
+        },
+    )
+    mutation = LighthouseStoryHandler()(job)
+    with (
+        SqlAlchemyUnitOfWork(factory) as unit_of_work,
+        pytest.raises(LookupError, match=str(missing_run_id)),
+    ):
+        mutation(unit_of_work)
     engine.dispose()
 
 
