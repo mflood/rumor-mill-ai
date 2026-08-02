@@ -32,6 +32,8 @@ from rumor_mill.adapters.persistence.models import (
     EventModel,
     JobModel,
     NarrativeReportModel,
+    OperatorAuditModel,
+    RunModel,
     VisitorCharacterStateModel,
     VisitorModel,
     WorkerHeartbeatModel,
@@ -242,6 +244,36 @@ class NarrativeReportResponse(ApiModel):
     created_at: datetime
 
 
+class OperatorConfirmation(ApiModel):
+    confirm: bool = False
+
+
+class OperatorStatusResponse(ApiModel):
+    run: RunResponse
+    pending_jobs: int
+    failed_jobs: int
+    reports: int
+
+
+class OperatorJobResponse(ApiModel):
+    id: UUID
+    run_id: UUID
+    kind: str
+    status: str
+    attempts: int
+    max_attempts: int
+    error: str | None
+
+
+class OperatorReportResponse(ApiModel):
+    id: UUID
+    run_id: UUID
+    target_kind: str
+    category: str
+    diagnostic_refs: dict[str, str]
+    created_at: datetime
+
+
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
@@ -343,6 +375,31 @@ def create_app(
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "operator API is disabled")
         if credentials is None or credentials.credentials != expected.get_secret_value():
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid operator credentials")
+
+    def confirm_action(request: OperatorConfirmation) -> None:
+        if not request.confirm:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "explicit confirmation is required",
+            )
+
+    def audit(
+        database: Session,
+        *,
+        action: str,
+        resource_kind: str,
+        resource_id: UUID,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        database.add(
+            OperatorAuditModel(
+                actor="operator-api-key",
+                action=action,
+                resource_kind=resource_kind,
+                resource_id=str(resource_id),
+                details=details or {},
+            )
+        )
 
     def token_digest(token: str) -> str:
         return sha256(token.encode("utf-8")).hexdigest()
@@ -611,6 +668,111 @@ def create_app(
     def get_run(run_id: UUID) -> RunResponse:
         run, _ = load_run(run_id)
         return RunResponse.from_record(run)
+
+    @app.get(
+        "/operator/runs/{run_id}",
+        response_model=OperatorStatusResponse,
+        dependencies=[Depends(require_operator)],
+        include_in_schema=False,
+    )
+    def operator_status(
+        run_id: UUID, database: Annotated[Session, Depends(session)]
+    ) -> OperatorStatusResponse:
+        run, _ = load_run(run_id)
+        return OperatorStatusResponse(
+            run=RunResponse.from_record(run),
+            pending_jobs=database.scalar(
+                select(func.count())
+                .select_from(JobModel)
+                .where(JobModel.run_id == run_id, JobModel.status.in_(("pending", "running")))
+            )
+            or 0,
+            failed_jobs=database.scalar(
+                select(func.count())
+                .select_from(JobModel)
+                .where(JobModel.run_id == run_id, JobModel.status.in_(("failed", "dead")))
+            )
+            or 0,
+            reports=database.scalar(
+                select(func.count())
+                .select_from(NarrativeReportModel)
+                .where(NarrativeReportModel.run_id == run_id)
+            )
+            or 0,
+        )
+
+    def set_run_state(
+        run_id: UUID,
+        request: OperatorConfirmation,
+        database: Session,
+        *,
+        action: Literal["pause", "resume"],
+    ) -> RunResponse:
+        confirm_action(request)
+        model = database.get(RunModel, run_id)
+        if model is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+        target = "paused" if action == "pause" else "running"
+        clock_mode = "paused" if action == "pause" else "wall"
+        model.status = target
+        model.clock_mode = clock_mode
+        model.wall_time_anchor = datetime.now(UTC)
+        audit(database, action=f"run.{action}", resource_kind="run", resource_id=run_id)
+        database.commit()
+        run, _ = load_run(run_id)
+        return RunResponse.from_record(run)
+
+    @app.post(
+        "/operator/runs/{run_id}/pause",
+        response_model=RunResponse,
+        dependencies=[Depends(require_operator)],
+        include_in_schema=False,
+    )
+    def pause_run(
+        run_id: UUID,
+        request: OperatorConfirmation,
+        database: Annotated[Session, Depends(session)],
+    ) -> RunResponse:
+        return set_run_state(run_id, request, database, action="pause")
+
+    @app.post(
+        "/operator/runs/{run_id}/resume",
+        response_model=RunResponse,
+        dependencies=[Depends(require_operator)],
+        include_in_schema=False,
+    )
+    def resume_run(
+        run_id: UUID,
+        request: OperatorConfirmation,
+        database: Annotated[Session, Depends(session)],
+    ) -> RunResponse:
+        return set_run_state(run_id, request, database, action="resume")
+
+    @app.post(
+        "/operator/runs/{run_id}/advance",
+        response_model=TickResponse,
+        dependencies=[Depends(require_operator)],
+        include_in_schema=False,
+    )
+    def operator_advance(
+        run_id: UUID,
+        request: OperatorConfirmation,
+        database: Annotated[Session, Depends(session)],
+    ) -> TickResponse:
+        confirm_action(request)
+        try:
+            result = SimulationScheduler(uow_factory).advance(run_id, manual_ticks=1)
+        except LookupError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found") from exc
+        audit(database, action="run.advance", resource_kind="run", resource_id=run_id)
+        database.commit()
+        return TickResponse(
+            previous_time=result.previous_time,
+            simulation_time=result.simulation_time,
+            ticks=result.ticks,
+            jobs_enqueued=result.jobs_enqueued,
+            catch_up_limited=result.catch_up_limited,
+        )
 
     @app.post(
         "/api/v1/runs/{run_id}/ticks",
@@ -1677,7 +1839,7 @@ def create_app(
         run, _ = load_run(run_id)
         story_date = (run.simulation_time or run.started_at).date().isoformat()
         model = cached_recap(database, run_id, story_date)
-        if model is None:
+        if model is None or model.payload.get("visibility", "public") != "public":
             raise HTTPException(status.HTTP_404_NOT_FOUND, "today's recap has not been generated")
         return recap_response(model)
 
@@ -1765,6 +1927,118 @@ def create_app(
         database.commit()
         database.refresh(model)
         return recap_response(model)
+
+    @app.post(
+        "/operator/jobs/{job_id}/retry",
+        response_model=OperatorJobResponse,
+        dependencies=[Depends(require_operator)],
+        include_in_schema=False,
+    )
+    def retry_operator_job(
+        job_id: UUID,
+        request: OperatorConfirmation,
+        database: Annotated[Session, Depends(session)],
+    ) -> OperatorJobResponse:
+        confirm_action(request)
+        try:
+            with uow_factory() as unit_of_work:
+                job = unit_of_work.jobs.retry(job_id, now=datetime.now(UTC))
+                unit_of_work.commit()
+        except LookupError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+        audit(database, action="job.retry", resource_kind="job", resource_id=job_id)
+        database.commit()
+        return OperatorJobResponse(
+            id=job.id,
+            run_id=job.run_id,
+            kind=job.kind,
+            status=job.status.value,
+            attempts=job.attempts,
+            max_attempts=job.max_attempts,
+            error=job.error,
+        )
+
+    def set_recap_publication(
+        recap_id: UUID,
+        request: OperatorConfirmation,
+        database: Session,
+        *,
+        published: bool,
+    ) -> DailyRecapResponse:
+        confirm_action(request)
+        model = database.get(ArtifactModel, recap_id)
+        if model is None or model.kind != "daily_recap":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "recap not found")
+        model.payload = {
+            **model.payload,
+            "visibility": "public" if published else "engine_only",
+            "publication_state": "published" if published else "unpublished",
+        }
+        action = "publish" if published else "unpublish"
+        audit(
+            database,
+            action=f"recap.{action}",
+            resource_kind="recap",
+            resource_id=recap_id,
+        )
+        database.commit()
+        database.refresh(model)
+        return recap_response(model)
+
+    @app.post(
+        "/operator/recaps/{recap_id}/publish",
+        response_model=DailyRecapResponse,
+        dependencies=[Depends(require_operator)],
+        include_in_schema=False,
+    )
+    def publish_recap(
+        recap_id: UUID,
+        request: OperatorConfirmation,
+        database: Annotated[Session, Depends(session)],
+    ) -> DailyRecapResponse:
+        return set_recap_publication(recap_id, request, database, published=True)
+
+    @app.post(
+        "/operator/recaps/{recap_id}/unpublish",
+        response_model=DailyRecapResponse,
+        dependencies=[Depends(require_operator)],
+        include_in_schema=False,
+    )
+    def unpublish_recap(
+        recap_id: UUID,
+        request: OperatorConfirmation,
+        database: Annotated[Session, Depends(session)],
+    ) -> DailyRecapResponse:
+        return set_recap_publication(recap_id, request, database, published=False)
+
+    @app.get(
+        "/operator/runs/{run_id}/reports",
+        response_model=list[OperatorReportResponse],
+        dependencies=[Depends(require_operator)],
+        include_in_schema=False,
+    )
+    def operator_reports(
+        run_id: UUID, database: Annotated[Session, Depends(session)]
+    ) -> list[OperatorReportResponse]:
+        load_run(run_id)
+        models = database.scalars(
+            select(NarrativeReportModel)
+            .where(NarrativeReportModel.run_id == run_id)
+            .order_by(NarrativeReportModel.created_at.desc())
+        )
+        return [
+            OperatorReportResponse(
+                id=model.id,
+                run_id=model.run_id,
+                target_kind=model.target_kind,
+                category=model.category,
+                diagnostic_refs=model.diagnostic_refs,
+                created_at=_aware(model.created_at),
+            )
+            for model in models
+        ]
 
     return app
 

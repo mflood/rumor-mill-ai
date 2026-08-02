@@ -48,6 +48,7 @@ TABLES = {
     "artifacts",
     "narrative_reports",
     "worker_heartbeats",
+    "operator_audit_entries",
 }
 
 
