@@ -1,0 +1,21 @@
+{
+  "name": "Rumor Mill AI",
+  "description": "A living AI web-toon where characters keep secrets and spread rumors.",
+  "repository": "https://github.com/mflood/rumor-mill-ai",
+  "buildpacks": [
+    {"url": "heroku/python"}
+  ],
+  "addons": [
+    {"plan": "heroku-postgresql:essential-0"}
+  ],
+  "env": {
+    "RUMOR_MILL_ENVIRONMENT": {"value": "production"},
+    "RUMOR_MILL_MODEL_PROVIDER": {"value": "fake"},
+    "RUMOR_MILL_OPERATOR_API_KEY": {"generator": "secret"},
+    "RUMOR_MILL_SECURE_VISITOR_COOKIE": {"value": "true"}
+  },
+  "formation": {
+    "web": {"quantity": 1},
+    "worker": {"quantity": 1}
+  }
+}

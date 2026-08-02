@@ -34,6 +34,7 @@ from rumor_mill.adapters.persistence.models import (
     NarrativeReportModel,
     VisitorCharacterStateModel,
     VisitorModel,
+    WorkerHeartbeatModel,
 )
 from rumor_mill.adapters.providers import create_model_provider
 from rumor_mill.config import Settings, get_settings
@@ -429,6 +430,12 @@ def create_app(
                 .limit(1)
             )
             if stale is not None:
+                components["worker"] = "degraded"
+            last_heartbeat = database.scalar(select(func.max(WorkerHeartbeatModel.last_seen_at)))
+            if last_heartbeat is None:
+                if settings.environment == "production":
+                    components["worker"] = "degraded"
+            elif _aware(last_heartbeat) < stale_before:
                 components["worker"] = "degraded"
         except Exception:  # pragma: no cover - requires a runtime database outage
             components["database"] = "degraded"

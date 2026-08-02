@@ -107,6 +107,15 @@ class SqlAlchemyRunRepository:
         )
         return self._record(model)
 
+    def list_active(self, *, limit: int = 100) -> tuple[RunRecord, ...]:
+        models = self._session.scalars(
+            select(RunModel)
+            .where(RunModel.status == RunStatus.RUNNING.value)
+            .order_by(RunModel.started_at, RunModel.id)
+            .limit(limit)
+        )
+        return tuple(record for model in models if (record := self._record(model)) is not None)
+
     def update_clock(
         self, run_id: UUID, *, simulation_time: datetime, wall_time_anchor: datetime
     ) -> None:
