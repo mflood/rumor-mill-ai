@@ -201,6 +201,42 @@ class SceneModel(IdMixin, CreatedMixin, Base):
     )
 
 
+class VisitorModel(IdMixin, CreatedMixin, Base):
+    __tablename__ = "visitors"
+
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("expires_at >= created_at", name="valid_expiry"),
+        Index("ix_visitors_expiry", "expires_at", "reset_at"),
+    )
+
+
+class VisitorCharacterStateModel(IdMixin, CreatedMixin, Base):
+    __tablename__ = "visitor_character_states"
+
+    visitor_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("visitors.id", ondelete="CASCADE"), nullable=False
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
+    character_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    relationship_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    trust: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False, default=0)
+    memories: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("visitor_id", "run_id", "character_id"),
+        CheckConstraint("trust >= 0 AND trust <= 1", name="valid_trust"),
+        Index("ix_visitor_character_state_lookup", "visitor_id", "run_id", "character_id"),
+    )
+
+
 class ConversationModel(IdMixin, CreatedMixin, Base):
     __tablename__ = "conversations"
 
@@ -210,6 +246,9 @@ class ConversationModel(IdMixin, CreatedMixin, Base):
     scene_id: Mapped[UUID | None] = mapped_column(
         Uuid, ForeignKey("scenes.id", ondelete="SET NULL")
     )
+    visitor_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("visitors.id", ondelete="CASCADE")
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     participant_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
@@ -217,6 +256,7 @@ class ConversationModel(IdMixin, CreatedMixin, Base):
 
     __table_args__ = (
         CheckConstraint("ended_at IS NULL OR ended_at >= started_at", name="valid_times"),
+        Index("ix_conversations_visitor_started", "visitor_id", "started_at"),
         Index("ix_conversations_run_started", "run_id", "started_at"),
     )
 

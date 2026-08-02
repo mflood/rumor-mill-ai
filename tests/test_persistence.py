@@ -37,6 +37,8 @@ TABLES = {
     "memories",
     "scenes",
     "conversations",
+    "visitors",
+    "visitor_character_states",
     "jobs",
     "artifacts",
 }
