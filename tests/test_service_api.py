@@ -26,6 +26,7 @@ from rumor_mill.adapters.persistence.models import (
     RunModel,
     VisitorCharacterStateModel,
     VisitorModel,
+    WorkerHeartbeatModel,
 )
 from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.config import Settings
@@ -1345,11 +1346,64 @@ def test_operator_console_auth_empty_state_and_confirmed_recovery(api) -> None: 
     empty = client.get("/operator/console")
     assert "Empty production state" in empty.text
     assert "No worlds or runs exist" in empty.text
+    assert "Last clock advancement" not in empty.text
+    assert "Queue depth: 0" in empty.text
 
     run_id = UUID(str(initialize(client)["id"]))
+    progress_at = datetime.now(UTC)
+    with factory.begin() as database:
+        database.add(
+            WorkerHeartbeatModel(
+                worker_id="worker.console",
+                last_seen_at=progress_at,
+                story_pipeline_ready=True,
+                last_clock_advanced_at=progress_at,
+                last_story_job_enqueued_at=progress_at,
+                last_story_job_completed_at=progress_at,
+                story_queue_depth=0,
+            )
+        )
     console = client.get("/operator/console?message=Refreshed")
     assert str(run_id) in console.text
     assert "Refreshed" in console.text
+    assert "Last clock advancement" in console.text
+    assert "Last job enqueue" in console.text
+    assert "Last job completion" in console.text
+    assert "Queue depth: 0" in console.text
+
+    with factory.begin() as database:
+        heartbeat = database.get(WorkerHeartbeatModel, "worker.console")
+        assert heartbeat is not None
+        heartbeat.last_story_job_completed_at = None
+    assert "awaiting the first due story job" in client.get("/operator/console").text
+
+    old_progress = progress_at - timedelta(hours=1)
+    with factory.begin() as database:
+        heartbeat = database.get(WorkerHeartbeatModel, "worker.console")
+        run = database.get(RunModel, run_id)
+        assert heartbeat is not None and run is not None
+        heartbeat.last_clock_advanced_at = old_progress
+        run.clock_mode = "wall"
+        run.started_at = old_progress
+    assert "no recent clock advancement" in client.get("/operator/console").text
+
+    with factory.begin() as database:
+        heartbeat = database.get(WorkerHeartbeatModel, "worker.console")
+        assert heartbeat is not None
+        heartbeat.last_clock_advanced_at = progress_at
+        database.add(
+            JobModel(
+                id=uuid4(),
+                run_id=run_id,
+                idempotency_key="operator-stalled-job",
+                kind="test",
+                status="pending",
+                scheduled_at=old_progress,
+                available_at=old_progress,
+                payload={},
+            )
+        )
+    assert "overdue queued job" in client.get("/operator/console").text
     assert client.get(f"/operator/console/runs/{uuid4()}").status_code == 404
     detail = client.get(f"/operator/console/runs/{run_id}")
     assert "Infrastructure" not in detail.text

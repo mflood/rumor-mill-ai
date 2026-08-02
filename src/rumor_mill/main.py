@@ -655,15 +655,42 @@ def create_app(
                 components["worker"] = "degraded"
                 components["story_pipeline"] = "degraded"
             operational_pipeline = database.scalar(
-                select(WorkerHeartbeatModel.worker_id)
+                select(WorkerHeartbeatModel)
                 .where(
                     WorkerHeartbeatModel.story_pipeline_ready.is_(True),
                     WorkerHeartbeatModel.last_seen_at >= stale_before,
                 )
+                .order_by(WorkerHeartbeatModel.last_seen_at.desc())
                 .limit(1)
             )
             if operational_pipeline is None and settings.environment == "production":
                 components["story_pipeline"] = "degraded"
+            elif operational_pipeline is not None:
+                pipeline_stale_before = datetime.now(UTC) - timedelta(
+                    seconds=settings.story_pipeline_stale_after_seconds
+                )
+                oldest_active_run = database.scalar(
+                    select(func.min(RunModel.started_at)).where(
+                        RunModel.status == RunStatus.RUNNING,
+                        RunModel.clock_mode == "wall",
+                    )
+                )
+                clock_progress = operational_pipeline.last_clock_advanced_at
+                overdue_job = database.scalar(
+                    select(JobModel.id)
+                    .where(
+                        JobModel.status.in_(("pending", "failed")),
+                        JobModel.available_at < pipeline_stale_before,
+                    )
+                    .limit(1)
+                )
+                clock_stalled = (
+                    oldest_active_run is not None
+                    and _aware(oldest_active_run) < pipeline_stale_before
+                    and (clock_progress is None or _aware(clock_progress) < pipeline_stale_before)
+                )
+                if clock_stalled or overdue_job is not None:
+                    components["story_pipeline"] = "degraded"
         except Exception:  # pragma: no cover - requires a runtime database outage
             components["database"] = "degraded"
             components["worker"] = "degraded"
@@ -724,6 +751,23 @@ def create_app(
             .where(JobModel.status.in_(("pending", "failed")), JobModel.available_at < now)
         )
         metrics.set("job_lag_count", float(lag or 0))
+        queue_depth = database.scalar(
+            select(func.count())
+            .select_from(JobModel)
+            .where(JobModel.status.in_(("pending", "failed")))
+        )
+        metrics.set("story_queue_depth", float(queue_depth or 0))
+        pipeline_stale_before = now - timedelta(seconds=settings.story_pipeline_stale_after_seconds)
+        recent_progress = database.scalar(
+            select(WorkerHeartbeatModel.worker_id)
+            .where(
+                WorkerHeartbeatModel.story_pipeline_ready.is_(True),
+                WorkerHeartbeatModel.last_seen_at >= pipeline_stale_before,
+                WorkerHeartbeatModel.last_clock_advanced_at >= pipeline_stale_before,
+            )
+            .limit(1)
+        )
+        metrics.set("story_pipeline_progressing", float(recent_progress is not None))
         playable, _ = product_readiness(database)
         metrics.set("playable_story_available", float(playable))
         return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
@@ -995,6 +1039,44 @@ def create_app(
             .limit(1)
         )
         pipeline_ok = pipeline is not None
+        pipeline_stale_before = datetime.now(UTC) - timedelta(
+            seconds=settings.story_pipeline_stale_after_seconds
+        )
+        queue_depth = (
+            database.scalar(
+                select(func.count())
+                .select_from(JobModel)
+                .where(JobModel.status.in_(("pending", "failed")))
+            )
+            or 0
+        )
+        overdue_jobs = (
+            database.scalar(
+                select(func.count())
+                .select_from(JobModel)
+                .where(
+                    JobModel.status.in_(("pending", "failed")),
+                    JobModel.available_at < pipeline_stale_before,
+                )
+            )
+            or 0
+        )
+        active_wall_started = database.scalar(
+            select(func.min(RunModel.started_at)).where(
+                RunModel.status == RunStatus.RUNNING,
+                RunModel.clock_mode == "wall",
+            )
+        )
+        clock_stalled = bool(
+            pipeline is not None
+            and active_wall_started is not None
+            and _aware(active_wall_started) < pipeline_stale_before
+            and (
+                pipeline.last_clock_advanced_at is None
+                or _aware(pipeline.last_clock_advanced_at) < pipeline_stale_before
+            )
+        )
+        pipeline_ok = pipeline_ok and not clock_stalled and not overdue_jobs
         story = available_story(database)
         run_cards = []
         for run in runs:
@@ -1012,16 +1094,35 @@ def create_app(
             )
         notice = f'<p class="notice">{escape(message)}</p>' if message else ""
         availability = "Playable Lighthouse season found" if story else "No playable season"
-        pipeline_detail = (
-            f"Operational · last output {_aware(pipeline.last_story_job_completed_at).isoformat()}"
-            if pipeline is not None and pipeline.last_story_job_completed_at is not None
-            else (
-                "Operational · awaiting first due story job"
-                if pipeline_ok
-                else "Clock-only or unavailable"
+        if pipeline is None:
+            pipeline_detail = "Unavailable — restart or redeploy the worker."
+        elif overdue_jobs:
+            pipeline_detail = (
+                f"Stalled — {overdue_jobs} overdue queued job(s). Inspect failures and restart "
+                "the worker after correcting the cause."
             )
+        elif clock_stalled:
+            pipeline_detail = (
+                "Stalled — no recent clock advancement. Confirm a running wall-clock season and "
+                "restart the worker."
+            )
+        elif pipeline.last_story_job_completed_at is not None:
+            pipeline_detail = "Operational"
+        else:
+            pipeline_detail = "Operational — awaiting the first due story job."
+
+        def progress_time(value: datetime | None) -> str:
+            return _aware(value).isoformat() if value is not None else "Not yet observed"
+
+        progress = (
+            f"<small>Last clock advancement: {progress_time(pipeline.last_clock_advanced_at)}"
+            f"<br>Last job enqueue: {progress_time(pipeline.last_story_job_enqueued_at)}"
+            f"<br>Last job completion: {progress_time(pipeline.last_story_job_completed_at)}"
+            f"<br>Queue depth: {queue_depth}</small>"
+            if pipeline is not None
+            else f"<small>Queue depth: {queue_depth}</small>"
         )
-        body = f"""<form class="inline" action="/operator/session/logout" method="post" style="float:right"><button>Sign out</button></form><p class="muted">Rumor Mill</p><h1>Live story console</h1>{notice}<div class="grid"><div class="card"><strong>Infrastructure</strong><br><span class="ok">Web and database connected</span></div><div class="card"><strong>Story availability</strong><br><span class="{"ok" if story else "bad"}">{availability}</span></div><div class="card"><strong>Worker clock</strong><br><span class="{"ok" if worker_ok else "bad"}">{"Fresh" if worker_ok else "Missing or stale"}</span><br><small>{_aware(heartbeat).isoformat() if heartbeat else "No heartbeat"}</small></div><div class="card"><strong>Story pipeline</strong><br><span class="{"ok" if pipeline_ok else "bad"}">{pipeline_detail}</span></div><div class="card"><strong>Runs</strong><br>{len(runs)}</div></div>{"".join(run_cards) or "<section><h2>Empty production state</h2><p>No worlds or runs exist. Run the documented Lighthouse bootstrap recovery command.</p></section>"}"""
+        body = f"""<form class="inline" action="/operator/session/logout" method="post" style="float:right"><button>Sign out</button></form><p class="muted">Rumor Mill</p><h1>Live story console</h1>{notice}<div class="grid"><div class="card"><strong>Infrastructure</strong><br><span class="ok">Web and database connected</span></div><div class="card"><strong>Story availability</strong><br><span class="{"ok" if story else "bad"}">{availability}</span></div><div class="card"><strong>Worker heartbeat</strong><br><span class="{"ok" if worker_ok else "bad"}">{"Fresh" if worker_ok else "Missing or stale"}</span><br><small>{_aware(heartbeat).isoformat() if heartbeat else "No heartbeat"}</small></div><div class="card"><strong>Story pipeline</strong><br><span class="{"ok" if pipeline_ok else "bad"}">{pipeline_detail}</span><br>{progress}</div><div class="card"><strong>Runs</strong><br>{len(runs)}</div></div>{"".join(run_cards) or "<section><h2>Empty production state</h2><p>No worlds or runs exist. Run the documented Lighthouse bootstrap recovery command.</p></section>"}"""
         return operator_page("Live story console", body)
 
     @app.get(
