@@ -179,6 +179,15 @@ class SqlAlchemyJobRepository:
             statement = statement.where(JobModel.status == status.value)
         return tuple(self._record(model) for model in self._session.scalars(statement))  # type: ignore[misc]
 
+    def completed_keys(self, run_id: UUID, *, kind: str | None = None) -> frozenset[str]:
+        statement = select(JobModel.idempotency_key).where(
+            JobModel.run_id == run_id,
+            JobModel.status == JobStatus.COMPLETED.value,
+        )
+        if kind is not None:
+            statement = statement.where(JobModel.kind == kind)
+        return frozenset(self._session.scalars(statement))
+
     def claim_due(
         self, *, worker_id: str, now: datetime, lease_until: datetime
     ) -> JobRecord | None:

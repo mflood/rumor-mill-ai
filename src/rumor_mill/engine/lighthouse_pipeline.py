@@ -40,19 +40,34 @@ class LighthouseWorkSource:
     ) -> Iterable[ScheduledWork]:
         with self._unit_of_work_factory() as unit_of_work:
             world = unit_of_work.worlds.get(run.world_id)
+            completed_keys = unit_of_work.jobs.completed_keys(run.id, kind=LIGHTHOUSE_STORY_JOB)
         if world is None or world.slug != "lighthouse":
             return ()
 
         definition = world.definition
         work: list[ScheduledWork] = []
+        completed_beats = {
+            key.rsplit(":", 1)[-1]
+            for key in completed_keys
+            if key.startswith(f"run:{run.id}:beat:")
+        }
         beats = definition.get("beat_graph", {}).get("beats", [])
         for beat in beats:
-            day = int(beat["earliest_day"])
-            scheduled_at = run.started_at + timedelta(days=day - 1, minutes=5)
-            if after < scheduled_at <= through:
+            beat_id = str(beat["id"])
+            if beat_id in completed_beats:
+                continue
+            prerequisites = {str(item) for item in beat.get("depends_on", [])}
+            if not prerequisites <= completed_beats:
+                continue
+            earliest = run.started_at + timedelta(days=int(beat["earliest_day"]) - 1, minutes=5)
+            latest = run.started_at + timedelta(days=int(beat["latest_day"]))
+            # A prerequisite may complete after this beat's earliest instant. In that case,
+            # enqueue it on the first subsequent simulation tick that remains in its window.
+            scheduled_at = max(earliest, through if earliest <= after else earliest)
+            if after < scheduled_at <= through and scheduled_at <= latest:
                 work.append(
                     ScheduledWork(
-                        key=f"beat:{beat['id']}",
+                        key=f"beat:{beat_id}",
                         kind=LIGHTHOUSE_STORY_JOB,
                         scheduled_at=scheduled_at,
                         payload={"story_kind": "beat", **beat},
