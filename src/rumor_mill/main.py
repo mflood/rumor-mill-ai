@@ -1,12 +1,14 @@
 """FastAPI application entrypoint and stable simulation service API."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
+from secrets import token_urlsafe
 from typing import Annotated, Any, Generic, Literal, TypeVar
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
-from fastapi.responses import HTMLResponse
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,7 +21,12 @@ from rumor_mill.adapters.persistence import (
     create_database_engine,
     create_session_factory,
 )
-from rumor_mill.adapters.persistence.models import ArtifactModel, ConversationModel
+from rumor_mill.adapters.persistence.models import (
+    ArtifactModel,
+    ConversationModel,
+    VisitorCharacterStateModel,
+    VisitorModel,
+)
 from rumor_mill.config import Settings, get_settings
 from rumor_mill.engine.ports import ClockMode, RunRecord, RunStatus, WorldRecord
 from rumor_mill.engine.recap import DailyRecap, RecapSource, build_daily_recap
@@ -135,6 +142,12 @@ class ConversationResponse(ApiModel):
     messages: list[ConversationMessage]
 
 
+class VisitorSessionResponse(ApiModel):
+    visitor_id: UUID
+    created_at: datetime
+    expires_at: datetime
+
+
 class EpisodeResponse(ApiModel):
     id: UUID
     kind: str
@@ -180,6 +193,7 @@ def create_app(
     web_root = Path(__file__).with_name("web")
     app.mount("/static", StaticFiles(directory=web_root / "static"), name="static")
     bearer = HTTPBearer(auto_error=False)
+    visitor_cookie = "rm_visitor"
 
     def uow_factory() -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(session_factory)
@@ -200,15 +214,49 @@ def create_app(
         if credentials is None or credentials.credentials != expected.get_secret_value():
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid operator credentials")
 
-    def require_visitor(x_visitor_id: Annotated[str | None, Header()] = None) -> UUID:
-        if x_visitor_id is None:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "X-Visitor-ID is required")
-        try:
-            return UUID(x_visitor_id)
-        except ValueError as exc:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "X-Visitor-ID must be a UUID"
-            ) from exc
+    def token_digest(token: str) -> str:
+        return sha256(token.encode("utf-8")).hexdigest()
+
+    def set_visitor_cookie(response: Response, token: str) -> None:
+        response.set_cookie(
+            visitor_cookie,
+            token,
+            max_age=settings.visitor_session_days * 86_400,
+            httponly=True,
+            secure=settings.secure_visitor_cookie,
+            samesite="lax",
+            path="/",
+        )
+
+    def new_visitor(database: Session, response: Response) -> VisitorModel:
+        now = datetime.now(UTC)
+        token = token_urlsafe(32)
+        visitor = VisitorModel(
+            token_hash=token_digest(token),
+            last_seen_at=now,
+            expires_at=now + timedelta(days=settings.visitor_session_days),
+        )
+        database.add(visitor)
+        database.commit()
+        database.refresh(visitor)
+        set_visitor_cookie(response, token)
+        return visitor
+
+    def require_visitor(
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
+    ) -> VisitorModel:
+        if token is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "visitor session is required")
+        visitor = database.scalar(
+            select(VisitorModel).where(VisitorModel.token_hash == token_digest(token))
+        )
+        now = datetime.now(UTC)
+        if visitor is None or visitor.reset_at is not None or _aware(visitor.expires_at) <= now:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "visitor session has expired")
+        visitor.last_seen_at = now
+        database.commit()
+        return visitor
 
     def load_run(run_id: UUID) -> tuple[RunRecord, WorldDefinition]:
         with uow_factory() as unit_of_work:
@@ -234,10 +282,67 @@ def create_app(
         """Render the latest spoiler-safe daily briefing without requiring JavaScript."""
         return HTMLResponse((web_root / "today.html").read_text(encoding="utf-8"))
 
+    @app.post("/lighthouse/session", include_in_schema=False)
+    def enter_lighthouse(database: Annotated[Session, Depends(session)]) -> RedirectResponse:
+        response = RedirectResponse("/lighthouse/today", status_code=status.HTTP_303_SEE_OTHER)
+        new_visitor(database, response)
+        return response
+
+    @app.post("/lighthouse/session/reset", include_in_schema=False)
+    def reset_lighthouse_session(
+        database: Annotated[Session, Depends(session)],
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
+    ) -> RedirectResponse:
+        visitor.reset_at = datetime.now(UTC)
+        database.commit()
+        response = RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
+        response.delete_cookie(visitor_cookie, path="/")
+        return response
+
     @app.get("/api/v1/health", response_model=HealthResponse, tags=["system"])
     def api_health(database: Annotated[Session, Depends(session)]) -> HealthResponse:
         database.execute(text("SELECT 1"))
         return HealthResponse(status="ok", environment=settings.environment)
+
+    @app.post(
+        "/api/v1/visitors/session",
+        response_model=VisitorSessionResponse,
+        status_code=status.HTTP_201_CREATED,
+        tags=["visitors"],
+    )
+    def create_visitor_session(
+        response: Response, database: Annotated[Session, Depends(session)]
+    ) -> VisitorSessionResponse:
+        visitor = new_visitor(database, response)
+        return VisitorSessionResponse(
+            visitor_id=visitor.id,
+            created_at=_aware(visitor.created_at),
+            expires_at=_aware(visitor.expires_at),
+        )
+
+    @app.get("/api/v1/visitors/me", response_model=VisitorSessionResponse, tags=["visitors"])
+    def get_visitor_session(
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
+    ) -> VisitorSessionResponse:
+        return VisitorSessionResponse(
+            visitor_id=visitor.id,
+            created_at=_aware(visitor.created_at),
+            expires_at=_aware(visitor.expires_at),
+        )
+
+    @app.delete(
+        "/api/v1/visitors/session",
+        status_code=status.HTTP_204_NO_CONTENT,
+        tags=["visitors"],
+    )
+    def delete_visitor_session(
+        response: Response,
+        database: Annotated[Session, Depends(session)],
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
+    ) -> None:
+        visitor.reset_at = datetime.now(UTC)
+        database.commit()
+        response.delete_cookie(visitor_cookie, path="/")
 
     @app.post(
         "/api/v1/worlds/{slug}/runs",
@@ -389,7 +494,7 @@ def create_app(
     def start_conversation(
         run_id: UUID,
         request: StartConversationRequest,
-        visitor_id: Annotated[UUID, Depends(require_visitor)],
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
         database: Annotated[Session, Depends(session)],
     ) -> ConversationResponse:
         _, world = load_run(run_id)
@@ -397,14 +502,34 @@ def create_app(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "character not found")
         model = ConversationModel(
             run_id=run_id,
+            visitor_id=visitor.id,
             started_at=datetime.now(UTC),
-            participant_ids=[request.character_id, str(visitor_id)],
+            participant_ids=[request.character_id, str(visitor.id)],
             transcript=[],
         )
+        state_model = database.scalar(
+            select(VisitorCharacterStateModel).where(
+                VisitorCharacterStateModel.visitor_id == visitor.id,
+                VisitorCharacterStateModel.run_id == run_id,
+                VisitorCharacterStateModel.character_id == request.character_id,
+            )
+        )
+        if state_model is None:
+            database.add(
+                VisitorCharacterStateModel(
+                    visitor_id=visitor.id,
+                    run_id=run_id,
+                    character_id=request.character_id,
+                    relationship_summary="A new visitor to Greyhaven.",
+                    trust=0,
+                    memories=[],
+                    updated_at=datetime.now(UTC),
+                )
+            )
         database.add(model)
         database.commit()
         database.refresh(model)
-        return conversation_response(model, visitor_id)
+        return conversation_response(model, visitor.id)
 
     def owned_conversation(
         conversation_id: UUID, visitor_id: UUID, database: Session
@@ -412,7 +537,7 @@ def create_app(
         model = database.get(ConversationModel, conversation_id)
         if model is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
-        if len(model.participant_ids) < 2 or model.participant_ids[1] != str(visitor_id):
+        if model.visitor_id != visitor_id:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN, "conversation belongs to another visitor"
             )
@@ -425,11 +550,11 @@ def create_app(
     )
     def get_conversation(
         conversation_id: UUID,
-        visitor_id: Annotated[UUID, Depends(require_visitor)],
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
         database: Annotated[Session, Depends(session)],
     ) -> ConversationResponse:
         return conversation_response(
-            owned_conversation(conversation_id, visitor_id, database), visitor_id
+            owned_conversation(conversation_id, visitor.id, database), visitor.id
         )
 
     @app.post(
@@ -440,10 +565,10 @@ def create_app(
     def add_message(
         conversation_id: UUID,
         request: AddMessageRequest,
-        visitor_id: Annotated[UUID, Depends(require_visitor)],
+        visitor: Annotated[VisitorModel, Depends(require_visitor)],
         database: Annotated[Session, Depends(session)],
     ) -> ConversationResponse:
-        model = owned_conversation(conversation_id, visitor_id, database)
+        model = owned_conversation(conversation_id, visitor.id, database)
         transcript = list(model.transcript)
         transcript.append(
             ConversationMessage(
@@ -453,7 +578,7 @@ def create_app(
         model.transcript = transcript
         database.commit()
         database.refresh(model)
-        return conversation_response(model, visitor_id)
+        return conversation_response(model, visitor.id)
 
     @app.get(
         "/api/v1/runs/{run_id}/episodes",

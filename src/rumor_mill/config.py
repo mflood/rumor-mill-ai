@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.6-luna"
     openai_timeout_seconds: float = Field(default=60.0, gt=0)
     openai_max_retries: int = Field(default=2, ge=0, le=10)
+    visitor_session_days: int = Field(default=365, ge=1, le=730)
+    secure_visitor_cookie: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="RUMOR_MILL_", extra="ignore")
 

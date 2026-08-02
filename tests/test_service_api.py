@@ -14,13 +14,16 @@ from pydantic import SecretStr
 from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence import create_database_engine, create_session_factory
-from rumor_mill.adapters.persistence.models import ArtifactModel, Base
+from rumor_mill.adapters.persistence.models import (
+    ArtifactModel,
+    Base,
+    VisitorCharacterStateModel,
+    VisitorModel,
+)
 from rumor_mill.config import Settings
 from rumor_mill.main import create_app
 
 ROOT = Path(__file__).parents[1]
-VISITOR = UUID("00000000-0000-0000-0000-000000000111")
-OTHER_VISITOR = UUID("00000000-0000-0000-0000-000000000222")
 
 
 @pytest.fixture
@@ -36,6 +39,7 @@ def api(tmp_path: Path):  # type: ignore[no-untyped-def]
         database_url=url,
         operator_api_key=SecretStr("operator-secret"),
         environment="test",
+        secure_visitor_cookie=False,
     )
     with TestClient(create_app(settings, factory)) as client:
         yield client, factory
@@ -55,6 +59,12 @@ def initialize(client: TestClient) -> dict[str, object]:
         headers={"Authorization": "Bearer operator-secret"},
         json={"definition": world_payload(), "seed": 42, "clock_mode": "manual"},
     )
+    assert response.status_code == 201
+    return cast(dict[str, object], response.json())
+
+
+def start_visitor_session(client: TestClient) -> dict[str, object]:
+    response = client.post("/api/v1/visitors/session")
     assert response.status_code == 201
     return cast(dict[str, object], response.json())
 
@@ -93,23 +103,22 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
     assert characters["total"] == 2
     assert characters["items"][0]["location_id"] == "market"
 
-    visitor_header = {"X-Visitor-ID": str(VISITOR)}
+    visitor = start_visitor_session(client)
     created = client.post(
         f"/api/v1/runs/{run_id}/conversations",
-        headers=visitor_header,
         json={"character_id": "ada"},
     )
     assert created.status_code == 201
     conversation_id = created.json()["id"]
     message = client.post(
         f"/api/v1/conversations/{conversation_id}/messages",
-        headers=visitor_header,
         json={"content": "What did you see?"},
     )
     assert message.status_code == 200
     assert message.json()["messages"][0]["role"] == "visitor"
-    fetched = client.get(f"/api/v1/conversations/{conversation_id}", headers=visitor_header).json()
+    fetched = client.get(f"/api/v1/conversations/{conversation_id}").json()
     assert fetched["messages"][0]["content"] == "What did you see?"
+    assert fetched["visitor_id"] == visitor["visitor_id"]
 
     now = datetime.now(UTC)
     with factory() as database:
@@ -256,43 +265,76 @@ def test_authentication_validation_and_not_found_errors(api) -> None:  # type: i
     run_id = run["id"]
     conversation_path = f"/api/v1/runs/{run_id}/conversations"
     assert client.post(conversation_path, json={"character_id": "ada"}).status_code == 401
+    first_visitor = start_visitor_session(client)
     assert (
         client.post(
             conversation_path,
-            headers={"X-Visitor-ID": "not-a-uuid"},
-            json={"character_id": "ada"},
-        ).status_code
-        == 422
-    )
-    assert (
-        client.post(
-            conversation_path,
-            headers={"X-Visitor-ID": str(VISITOR)},
             json={"character_id": "unknown"},
         ).status_code
         == 404
     )
 
     missing_conversation = uuid4()
-    assert (
-        client.get(
-            f"/api/v1/conversations/{missing_conversation}",
-            headers={"X-Visitor-ID": str(VISITOR)},
-        ).status_code
-        == 404
-    )
+    assert client.get(f"/api/v1/conversations/{missing_conversation}").status_code == 404
     created = client.post(
         conversation_path,
-        headers={"X-Visitor-ID": str(VISITOR)},
         json={"character_id": "ada"},
     ).json()
+    client.cookies.clear()
+    second_visitor = start_visitor_session(client)
+    assert second_visitor["visitor_id"] != first_visitor["visitor_id"]
+    assert client.get(f"/api/v1/conversations/{created['id']}").status_code == 403
+
+
+def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = initialize(client)["id"]
+    session_response = client.post("/api/v1/visitors/session")
+    assert session_response.status_code == 201
+    visitor = session_response.json()
+    cookie = client.cookies.get("rm_visitor")
+    assert cookie is not None
+    assert "HttpOnly" in session_response.headers["set-cookie"]
+    current = client.get("/api/v1/visitors/me")
+    assert current.status_code == 200
+
+    # A duplicate tab sends the same cookie and receives the same pseudonymous identity.
+    with TestClient(client.app) as other_tab:
+        other_tab.cookies.set("rm_visitor", cookie)
+        assert other_tab.get("/api/v1/visitors/me").json()["visitor_id"] == visitor["visitor_id"]
+
+    conversation = client.post(f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"})
+    assert conversation.status_code == 201
     assert (
-        client.get(
-            f"/api/v1/conversations/{created['id']}",
-            headers={"X-Visitor-ID": str(OTHER_VISITOR)},
+        client.post(
+            f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
         ).status_code
-        == 403
+        == 201
     )
+    with factory() as database:
+        assert database.query(VisitorCharacterStateModel).count() == 1
+        stored = database.get(VisitorModel, UUID(str(visitor["visitor_id"])))
+        assert stored is not None
+        stored.created_at = datetime(2019, 1, 1, tzinfo=UTC)
+        stored.expires_at = datetime(2020, 1, 1, tzinfo=UTC)
+        database.commit()
+    assert client.get("/api/v1/visitors/me").status_code == 401
+
+    client.cookies.clear()
+    replacement = start_visitor_session(client)
+    assert client.delete("/api/v1/visitors/session").status_code == 204
+    assert client.get("/api/v1/visitors/me").status_code == 401
+    with factory() as database:
+        reset = database.get(VisitorModel, UUID(str(replacement["visitor_id"])))
+        assert reset is not None and reset.reset_at is not None
+
+    # The server-rendered flow uses the same secure session lifecycle.
+    entered = client.post("/lighthouse/session", follow_redirects=False)
+    assert entered.status_code == 303
+    assert entered.headers["location"] == "/lighthouse/today"
+    forgotten = client.post("/lighthouse/session/reset", follow_redirects=False)
+    assert forgotten.status_code == 303
+    assert forgotten.headers["location"] == "/lighthouse"
 
 
 def test_operator_api_can_be_disabled(tmp_path: Path) -> None:
