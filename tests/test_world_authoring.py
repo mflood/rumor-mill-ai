@@ -149,3 +149,101 @@ def test_loader_accepts_string_path(tmp_path: Path) -> None:
     path = write_world(tmp_path, fixture_payload())
 
     assert load_world(str(path)).metadata.id == "lantern-market"
+
+
+def test_loader_accepts_locations_routines_and_travel_routes(tmp_path: Path) -> None:
+    payload = fixture_payload()
+    payload["locations"][0].update(
+        {
+            "purpose": "The public center of trade and encounter.",
+            "atmosphere": "Warm lantern light under a rain-dark roof.",
+            "access_rules": ["Open from 06:00 to 20:00."],
+            "clue_ids": ["market-ledger"],
+            "presentation_copy": "Lanterns glow above the morning stalls.",
+        }
+    )
+    payload["routines"] = [
+        {
+            "id": "ada-morning-round",
+            "character_id": "ada",
+            "location_id": "market",
+            "days": [1, 2, 3],
+            "start_time": "07:00",
+            "end_time": "09:00",
+            "activity": "Delivering private archive parcels.",
+            "public_activity": "Making the morning delivery round.",
+        }
+    ]
+    payload["travel_routes"] = [
+        {
+            "id": "market-archive-stairs",
+            "from_location_id": "market",
+            "to_location_id": "archive",
+            "minutes": 3,
+            "access_rules": ["Archive key required after 17:00."],
+        }
+    ]
+
+    world = load_world(write_world(tmp_path, payload))
+
+    assert world.locations[0].clue_ids == ("market-ledger",)
+    assert world.routines[0].start_time.isoformat() == "07:00:00"
+    assert world.travel_routes[0].minutes == 3
+
+
+def test_loader_rejects_invalid_routine_and_route_references(tmp_path: Path) -> None:
+    payload = fixture_payload()
+    payload["routines"] = [
+        {
+            "id": "lost-round",
+            "character_id": "missing-character",
+            "location_id": "missing-location",
+            "days": [1],
+            "start_time": "08:00",
+            "end_time": "09:00",
+            "activity": "Impossible round.",
+        }
+    ]
+    payload["travel_routes"] = [
+        {
+            "id": "nowhere",
+            "from_location_id": "market",
+            "to_location_id": "market",
+            "minutes": 1,
+        }
+    ]
+
+    with pytest.raises(WorldLoadError) as error:
+        load_world(write_world(tmp_path, payload))
+
+    message = str(error.value)
+    assert "unknown character id 'missing-character'" in message
+    assert "unknown location id 'missing-location'" in message
+    assert "travel route endpoints must be different" in message
+
+
+@pytest.mark.parametrize(
+    ("days", "start", "end", "expected"),
+    [
+        ([1], "09:00", "08:00", "start_time must be before end_time"),
+        ([1, 1], "08:00", "09:00", "days must not contain duplicates"),
+    ],
+)
+def test_loader_rejects_invalid_routine_windows(
+    tmp_path: Path, days: list[int], start: str, end: str, expected: str
+) -> None:
+    payload = fixture_payload()
+    payload["routines"] = [
+        {
+            "id": "invalid-round",
+            "character_id": "ada",
+            "location_id": "market",
+            "days": days,
+            "start_time": start,
+            "end_time": end,
+            "activity": "Invalid round.",
+        }
+    ]
+
+    with pytest.raises(WorldLoadError, match=expected):
+        load_world(write_world(tmp_path, payload))
