@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterable
+from datetime import time
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
@@ -39,6 +40,44 @@ class AuthoredLocation(AuthoringModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(min_length=1, max_length=2_000)
     parent_location_id: Slug | None = None
+    purpose: str | None = Field(default=None, min_length=1, max_length=500)
+    atmosphere: str | None = Field(default=None, min_length=1, max_length=500)
+    access_rules: tuple[str, ...] = ()
+    clue_ids: tuple[Slug, ...] = ()
+    presentation_copy: str | None = Field(default=None, min_length=1, max_length=1_000)
+
+
+class AuthoredRoutine(AuthoringModel):
+    """One recurring, authored presence window in a fourteen-day season."""
+
+    id: Slug
+    character_id: Slug
+    location_id: Slug
+    days: tuple[Annotated[int, Field(ge=1, le=14)], ...] = Field(min_length=1)
+    start_time: time
+    end_time: time
+    activity: str = Field(min_length=1, max_length=500)
+    public_activity: str | None = Field(default=None, min_length=1, max_length=500)
+    visibility: Visibility = Visibility.PUBLIC
+
+    @model_validator(mode="after")
+    def validate_window(self) -> Self:
+        if self.start_time >= self.end_time:
+            raise ValueError("start_time must be before end_time")
+        if len(set(self.days)) != len(self.days):
+            raise ValueError("days must not contain duplicates")
+        return self
+
+
+class AuthoredTravelRoute(AuthoringModel):
+    """A traversable edge used to constrain co-location and scene planning."""
+
+    id: Slug
+    from_location_id: Slug
+    to_location_id: Slug
+    minutes: int = Field(gt=0, le=24 * 60)
+    bidirectional: bool = True
+    access_rules: tuple[str, ...] = ()
 
 
 class InitialRelationship(AuthoringModel):
@@ -92,6 +131,8 @@ class WorldDefinition(AuthoringModel):
     secrets: tuple[AuthoredSecret, ...] = ()
     truth: tuple[AuthoredTruth, ...] = Field(min_length=1)
     beat_graph: BeatGraph
+    routines: tuple[AuthoredRoutine, ...] = ()
+    travel_routes: tuple[AuthoredTravelRoute, ...] = ()
 
     @model_validator(mode="after")
     def validate_world_references(self) -> Self:
@@ -162,6 +203,8 @@ def _reference_issues(world: WorldDefinition) -> tuple[WorldValidationIssue, ...
     truth_ids = _collect_ids(world.truth, "$.truth", issues)
     secret_ids = _collect_ids(world.secrets, "$.secrets", issues)
     beat_ids = _collect_ids(world.beat_graph.beats, "$.beat_graph.beats", issues)
+    _collect_ids(world.routines, "$.routines", issues)
+    _collect_ids(world.travel_routes, "$.travel_routes", issues)
 
     for index, character in enumerate(world.cast):
         _check_optional_reference(
@@ -245,6 +288,29 @@ def _reference_issues(world: WorldDefinition) -> tuple[WorldValidationIssue, ...
             "truth",
             issues,
         )
+    for index, routine in enumerate(world.routines):
+        prefix = f"$.routines[{index}]"
+        _check_reference(
+            routine.character_id, character_ids, f"{prefix}.character_id", "character", issues
+        )
+        _check_reference(
+            routine.location_id, location_ids, f"{prefix}.location_id", "location", issues
+        )
+    for index, route in enumerate(world.travel_routes):
+        prefix = f"$.travel_routes[{index}]"
+        _check_reference(
+            route.from_location_id, location_ids, f"{prefix}.from_location_id", "location", issues
+        )
+        _check_reference(
+            route.to_location_id, location_ids, f"{prefix}.to_location_id", "location", issues
+        )
+        if route.from_location_id == route.to_location_id:
+            issues.append(
+                WorldValidationIssue(
+                    field=f"{prefix}.to_location_id",
+                    message="travel route endpoints must be different",
+                )
+            )
     _check_references(
         world.beat_graph.entry_beat_ids,
         beat_ids,

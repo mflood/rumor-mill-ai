@@ -10,11 +10,13 @@ code and cannot call engine or operational APIs. The current format version is `
 | `schema_version` | Selects the exact contract and migration path. Must be `1`. |
 | `metadata` | Stable world ID, display title, summary, author, and content rating. |
 | `cast` | Characters and optional home-location references. |
-| `locations` | Locations and optional parent-location references. |
+| `locations` | Places, presentation copy, access rules, and clue stewardship. |
 | `initial_relationships` | Directed relationships between cast members. |
 | `truth` | Objective canonical facts and their character/location subjects. |
 | `secrets` | Restricted statements, their holders/knowers, and underlying truth. |
 | `beat_graph` | Entry beats, dependencies, participants, settings, truths, and revelations. |
+| `routines` | Recurring fourteen-day presence windows and spoiler-safe public explanations. |
+| `travel_routes` | Timed geography edges and traversal constraints. |
 
 Entity IDs are lowercase slugs such as `old-lighthouse`. They are stable authoring identifiers, not
 database IDs. Runtime seeding translates them into typed UUIDs while retaining the slug as source
