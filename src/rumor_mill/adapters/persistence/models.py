@@ -208,10 +208,14 @@ class VisitorModel(IdMixin, CreatedMixin, Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint("expires_at >= created_at", name="valid_expiry"),
         Index("ix_visitors_expiry", "expires_at", "reset_at"),
+        Index("ix_visitors_active_run", "active_run_id"),
     )
 
 

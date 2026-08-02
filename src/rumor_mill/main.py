@@ -37,6 +37,7 @@ from rumor_mill.adapters.persistence.models import (
     VisitorCharacterStateModel,
     VisitorModel,
     WorkerHeartbeatModel,
+    WorldModel,
 )
 from rumor_mill.adapters.providers import create_model_provider
 from rumor_mill.config import Settings, get_settings
@@ -430,13 +431,16 @@ def create_app(
             path="/",
         )
 
-    def new_visitor(database: Session, response: Response) -> VisitorModel:
+    def new_visitor(
+        database: Session, response: Response, *, active_run_id: UUID | None = None
+    ) -> VisitorModel:
         now = datetime.now(UTC)
         token = token_urlsafe(32)
         visitor = VisitorModel(
             token_hash=token_digest(token),
             last_seen_at=now,
             expires_at=now + timedelta(days=settings.visitor_session_days),
+            active_run_id=active_run_id,
         )
         database.add(visitor)
         database.commit()
@@ -475,6 +479,39 @@ def create_app(
         visitor.last_seen_at = now
         database.commit()
         return visitor
+
+    def optional_visitor(database: Session, token: str | None) -> VisitorModel | None:
+        if token is None:
+            return None
+        visitor = database.scalar(
+            select(VisitorModel).where(VisitorModel.token_hash == token_digest(token))
+        )
+        now = datetime.now(UTC)
+        if visitor is None or visitor.reset_at is not None or _aware(visitor.expires_at) <= now:
+            return None
+        return visitor
+
+    def available_story(database: Session) -> RunModel | None:
+        """Return the newest live season available for public entry."""
+        return database.scalar(
+            select(RunModel)
+            .join(WorldModel, WorldModel.id == RunModel.world_id)
+            .where(RunModel.status == RunStatus.RUNNING)
+            .order_by((WorldModel.slug == "lighthouse").desc(), RunModel.started_at.desc())
+            .limit(1)
+        )
+
+    def active_story(database: Session, token: str | None) -> RunModel | None:
+        visitor = optional_visitor(database, token)
+        if visitor is None or visitor.active_run_id is None:
+            return None
+        run = database.get(RunModel, visitor.active_run_id)
+        return run if run is not None and run.status == RunStatus.RUNNING else None
+
+    def unavailable_story_document() -> str:
+        return """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Story unavailable — The Lighthouse</title><meta property="og:title" content="Story unavailable — The Lighthouse"><meta property="og:image" content="/static/lighthouse-social.jpg"><meta name="twitter:card" content="summary_large_image"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/lighthouse.css"></head>
+<body><header class="site-header"><a class="wordmark" href="/lighthouse"><span>The Lighthouse</span></a><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/town">Town</a><a href="/lighthouse/archive">Archive</a></nav></header><main id="story-unavailable" class="season-archive"><div class="state-banner" role="status"><strong>No live story is available right now.</strong> Greyhaven cannot be entered until a season is running.</div><p><a class="primary-action" href="/lighthouse">Return to The Lighthouse</a></p></main></body></html>"""
 
     def load_run(run_id: UUID) -> tuple[RunRecord, WorldDefinition]:
         with uow_factory() as unit_of_work:
@@ -564,24 +601,77 @@ def create_app(
         return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
 
     @app.get("/lighthouse", response_class=HTMLResponse, include_in_schema=False)
-    def lighthouse() -> HTMLResponse:
+    def lighthouse(unavailable: Annotated[bool, Query()] = False) -> HTMLResponse:
         """Render the public, server-first Lighthouse story shell."""
-        return HTMLResponse((web_root / "lighthouse.html").read_text(encoding="utf-8"))
+        document = (web_root / "lighthouse.html").read_text(encoding="utf-8")
+        if unavailable:
+            ledger = """<form class="visitor-ledger" action="/lighthouse/session" method="post">
+            <p><strong>Your visitor’s ledger</strong> Greyhaven stores a private, pseudonymous record of your conversations so characters can remember you. It expires after one year, is never shared with other visitors, and you can erase it at any time.</p>
+            <button class="primary-action" type="submit">Enter and remember me <span aria-hidden="true">→</span></button>
+          </form>"""
+            unavailable_markup = """<div class="visitor-ledger state-banner" role="status"><p><strong>No live story is available right now.</strong> Greyhaven cannot be entered until a season is running.</p></div>"""
+            document = document.replace(ledger, unavailable_markup)
+        return HTMLResponse(document)
 
     @app.get("/lighthouse/today", response_class=HTMLResponse, include_in_schema=False)
-    def lighthouse_today() -> HTMLResponse:
+    def lighthouse_today(
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
+    ) -> HTMLResponse:
         """Render the latest spoiler-safe daily briefing without requiring JavaScript."""
-        return HTMLResponse((web_root / "today.html").read_text(encoding="utf-8"))
+        run_model = active_story(database, token)
+        if run_model is None:
+            return HTMLResponse(unavailable_story_document(), status_code=503)
+        run, world = load_run(run_model.id)
+        harbor = next(
+            (
+                item
+                for item in world.locations
+                if "harbor" in item.id or "harbor" in item.name.lower()
+            ),
+            world.locations[0],
+        )
+        northlight = next(
+            (item for item in world.locations if "northlight" in item.id), world.locations[0]
+        )
+        character = next(
+            (item for item in world.cast if item.id == "mae" or "mae bell" in item.name.lower()),
+            world.cast[0],
+        )
+        document = (web_root / "today.html").read_text(encoding="utf-8")
+        replacements = {
+            "/lighthouse/town/northlight": f"/lighthouse/runs/{run.id}/town/{northlight.id}",
+            "/lighthouse/town/harbor": f"/lighthouse/runs/{run.id}/town/{harbor.id}",
+            "/lighthouse/characters/mae": f"/lighthouse/runs/{run.id}/people/{character.id}",
+            '/lighthouse/town"': f'/lighthouse/runs/{run.id}/town"',
+            '/lighthouse/archive"': f'/lighthouse/runs/{run.id}/archive"',
+        }
+        for old, new in replacements.items():
+            document = document.replace(old, new)
+        document = document.replace("Mae Bell", escape(character.name))
+        return HTMLResponse(document)
 
     @app.get("/lighthouse/town", response_class=HTMLResponse, include_in_schema=False)
-    def lighthouse_town() -> HTMLResponse:
+    def lighthouse_town(
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
+    ) -> Response:
         """Render an authored, useful town map when no live run has been selected."""
-        return HTMLResponse((web_root / "town.html").read_text(encoding="utf-8"))
+        run = active_story(database, token)
+        if run is None:
+            return HTMLResponse(unavailable_story_document(), status_code=503)
+        return RedirectResponse(f"/lighthouse/runs/{run.id}/town", status_code=307)
 
     @app.get("/lighthouse/archive", response_class=HTMLResponse, include_in_schema=False)
-    def lighthouse_archive() -> HTMLResponse:
+    def lighthouse_archive(
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
+    ) -> Response:
         """Render a useful archive fallback when no live run has been selected."""
-        return HTMLResponse((web_root / "archive.html").read_text(encoding="utf-8"))
+        run = active_story(database, token)
+        if run is None:
+            return HTMLResponse(unavailable_story_document(), status_code=503)
+        return RedirectResponse(f"/lighthouse/runs/{run.id}/archive", status_code=307)
 
     @app.get("/lighthouse/feedback", response_class=HTMLResponse, include_in_schema=False)
     def lighthouse_feedback() -> HTMLResponse:
@@ -590,8 +680,10 @@ def create_app(
 
     @app.post("/lighthouse/session", include_in_schema=False)
     def enter_lighthouse(database: Annotated[Session, Depends(session)]) -> RedirectResponse:
-        response = RedirectResponse("/lighthouse/today", status_code=status.HTTP_303_SEE_OTHER)
-        new_visitor(database, response)
+        run = available_story(database)
+        destination = "/lighthouse/today" if run is not None else "/lighthouse?unavailable=true"
+        response = RedirectResponse(destination, status_code=status.HTTP_303_SEE_OTHER)
+        new_visitor(database, response, active_run_id=run.id if run is not None else None)
         return response
 
     @app.post("/lighthouse/session/reset", include_in_schema=False)

@@ -74,10 +74,31 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
             )
             assert advanced.json()["ticks"] == 3
 
-            visitor = first_visit.post("/api/v1/visitors/session")
-            assert visitor.status_code == 201
-            visitor_id = visitor.json()["visitor_id"]
+            entered = first_visit.post("/lighthouse/session", follow_redirects=False)
+            assert entered.status_code == 303
+            assert entered.headers["location"] == "/lighthouse/today"
             visitor_cookie = first_visit.cookies["rm_visitor"]
+            visitor = first_visit.get("/api/v1/visitors/me")
+            assert visitor.status_code == 200
+            visitor_id = visitor.json()["visitor_id"]
+
+            today = first_visit.get("/lighthouse/today")
+            assert today.status_code == 200
+            assert f"/lighthouse/runs/{run_id}/town/market" in today.text
+            assert f"/lighthouse/runs/{run_id}/people/ada" in today.text
+
+            harbor = first_visit.get(f"/lighthouse/runs/{run_id}/town/market")
+            assert harbor.status_code == 200
+            canonical_town = first_visit.get("/lighthouse/town")
+            assert canonical_town.status_code == 200
+            assert "Walk" in canonical_town.text
+            character = first_visit.get(f"/lighthouse/runs/{run_id}/people/ada")
+            assert character.status_code == 200
+
+            with TestClient(app, cookies={"rm_visitor": "not-a-valid-session"}) as invalid_visit:
+                unavailable = invalid_visit.get("/lighthouse/today")
+                assert unavailable.status_code == 503
+                assert "No live story is available right now" in unavailable.text
 
             opened = first_visit.post(
                 f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
@@ -139,5 +160,9 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
             episode = return_visit.get(f"/lighthouse/runs/{run_id}/archive/{episode_id}")
             assert episode.status_code == 200
             assert "Ada heard two notes carry down from the archive." in episode.text
+
+            canonical_archive = return_visit.get("/lighthouse/archive")
+            assert canonical_archive.status_code == 200
+            assert "The bell after midnight" in canonical_archive.text
     finally:
         engine.dispose()
