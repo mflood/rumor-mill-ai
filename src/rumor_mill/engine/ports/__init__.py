@@ -19,7 +19,11 @@ from rumor_mill.engine.ports.provider_errors import (
     ProviderUnavailableError,
 )
 from rumor_mill.engine.ports.repositories import (
+    ClockMode,
     EventRepository,
+    JobRecord,
+    JobRepository,
+    JobStatus,
     RunRecord,
     RunRepository,
     RunStatus,
@@ -29,9 +33,13 @@ from rumor_mill.engine.ports.repositories import (
 )
 
 __all__ = [
+    "ClockMode",
     "EventRepository",
     "GenerationRequest",
     "GenerationResult",
+    "JobRecord",
+    "JobRepository",
+    "JobStatus",
     "Message",
     "MessageRole",
     "ModelProvider",
