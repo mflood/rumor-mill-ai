@@ -12,7 +12,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence import create_database_engine, create_session_factory
@@ -23,6 +23,7 @@ from rumor_mill.adapters.persistence.models import (
     JobModel,
     NarrativeReportModel,
     OperatorAuditModel,
+    RunModel,
     VisitorCharacterStateModel,
     VisitorModel,
 )
@@ -1199,6 +1200,7 @@ def test_operator_api_can_be_disabled(tmp_path: Path) -> None:
             "/api/v1/worlds/lantern-market/runs",
             json={"definition": world_payload()},
         )
+        assert client.post("/operator/session", content="key=anything").status_code == 503
     engine.dispose()
     assert response.status_code == 503
 
@@ -1320,3 +1322,170 @@ def test_operator_controls_require_auth_confirmation_and_write_audit_entries(api
         "recap.unpublish",
         "recap.publish",
     } <= actions
+
+
+def test_operator_console_auth_empty_state_and_confirmed_recovery(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    anonymous = client.get("/operator/console", follow_redirects=False)
+    assert anonymous.headers["location"] == "/operator"
+    anonymous_detail = client.get(f"/operator/console/runs/{uuid4()}", follow_redirects=False)
+    assert anonymous_detail.status_code == 303
+    assert "Live story" not in client.get("/operator").text
+    client.cookies.set("rm_operator", "malformed")
+    assert client.get("/operator").status_code == 200
+    client.cookies.delete("rm_operator")
+    assert client.post("/operator/session", content="key=wrong").status_code == 200
+
+    signed_in = client.post(
+        "/operator/session", content="key=operator-secret", follow_redirects=False
+    )
+    assert signed_in.status_code == 303
+    assert client.get("/operator", follow_redirects=False).status_code == 303
+    empty = client.get("/operator/console")
+    assert "Empty production state" in empty.text
+    assert "No worlds or runs exist" in empty.text
+
+    run_id = UUID(str(initialize(client)["id"]))
+    console = client.get("/operator/console?message=Refreshed")
+    assert str(run_id) in console.text
+    assert "Refreshed" in console.text
+    assert client.get(f"/operator/console/runs/{uuid4()}").status_code == 404
+    detail = client.get(f"/operator/console/runs/{run_id}")
+    assert "Infrastructure" not in detail.text
+    assert "Simulation" in detail.text
+
+    rejected = client.post(f"/operator/console/runs/{run_id}/pause", content="")
+    assert rejected.status_code == 409
+    paused = client.post(
+        f"/operator/console/runs/{run_id}/pause",
+        content="confirm=yes",
+        follow_redirects=False,
+    )
+    assert paused.status_code == 303
+    assert (
+        client.post(
+            f"/operator/console/runs/{run_id}/resume",
+            content="confirm=yes",
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
+    assert (
+        client.post(
+            f"/operator/console/runs/{run_id}/advance",
+            content="confirm=yes",
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
+
+    now = datetime.now(UTC)
+    with factory() as database:
+        failed = JobModel(
+            run_id=run_id,
+            idempotency_key=f"console:{uuid4()}",
+            kind="scene",
+            status="failed",
+            scheduled_at=now,
+            available_at=now,
+            attempts=1,
+            max_attempts=3,
+            payload={},
+            error="safe provider error",
+        )
+        database.add(failed)
+        database.commit()
+        job_id = failed.id
+    assert "safe provider error" in client.get(f"/operator/console/runs/{run_id}").text
+    assert (
+        client.post(
+            f"/operator/console/jobs/{job_id}/retry",
+            content="confirm=yes",
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
+    assert (
+        client.post(f"/operator/console/jobs/{uuid4()}/retry", content="confirm=yes").status_code
+        == 404
+    )
+
+    generated = client.post(
+        f"/api/v1/runs/{run_id}/recaps/daily",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={},
+    ).json()
+    recap_id = generated["id"]
+    assert (
+        client.post(
+            f"/operator/console/recaps/{recap_id}/unpublish",
+            content="confirm=yes",
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
+    assert (
+        client.post(
+            f"/operator/console/recaps/{recap_id}/publish",
+            content="confirm=yes",
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
+    assert (
+        client.post(
+            f"/operator/console/recaps/{uuid4()}/publish", content="confirm=yes"
+        ).status_code
+        == 404
+    )
+
+    visitor = start_visitor_session(client)
+    with factory() as database:
+        report = NarrativeReportModel(
+            run_id=run_id,
+            visitor_id=UUID(str(visitor["visitor_id"])),
+            target_kind="episode",
+            category="continuity",
+            note="private note must not appear",
+            diagnostic_refs={"artifact_id": recap_id},
+        )
+        database.add(report)
+        database.commit()
+        report_id = report.id
+    report_console = client.get(f"/operator/console/runs/{run_id}")
+    assert "continuity" in report_console.text
+    assert "private note" not in report_console.text
+    assert (
+        client.post(
+            f"/operator/console/reports/{report_id}/review",
+            content="confirm=yes",
+            follow_redirects=False,
+        ).status_code
+        == 303
+    )
+    assert (
+        client.post(
+            f"/operator/console/reports/{uuid4()}/review", content="confirm=yes"
+        ).status_code
+        == 404
+    )
+
+    with factory() as database:
+        recovered_run = database.get(RunModel, run_id)
+        assert recovered_run is not None and recovered_run.status == "running"
+        assert (
+            database.scalar(
+                select(func.count())
+                .select_from(OperatorAuditModel)
+                .where(OperatorAuditModel.action == "run.pause")
+            )
+            == 1
+        )
+        actions = set(database.scalars(select(OperatorAuditModel.action)))
+        assert {"run.resume", "run.advance", "job.retry", "report.review"} <= actions
+
+    assert client.post("/operator/session/logout", follow_redirects=False).status_code == 303
+    assert (
+        client.post(f"/operator/console/runs/{run_id}/pause", content="confirm=yes").status_code
+        == 401
+    )

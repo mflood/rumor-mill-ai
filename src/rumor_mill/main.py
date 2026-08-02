@@ -6,10 +6,13 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from hmac import compare_digest
+from hmac import new as hmac_new
 from html import escape
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Annotated, Any, Generic, Literal, TypeVar
+from urllib.parse import parse_qs, quote
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, status
@@ -319,6 +322,7 @@ def create_app(
     app.mount("/static", StaticFiles(directory=web_root / "static"), name="static")
     bearer = HTTPBearer(auto_error=False)
     visitor_cookie = "rm_visitor"
+    operator_cookie = "rm_operator"
 
     @app.middleware("http")
     async def request_observability(request: Request, call_next: Any) -> Response:
@@ -331,8 +335,8 @@ def create_app(
         key = request.client.host if request.client else "unknown"
         origin = request.headers.get("origin")
         expected_origin = f"{request.url.scheme}://{request.url.netloc}"
-        cookie_authenticated_write = (
-            request.method not in {"GET", "HEAD", "OPTIONS"} and visitor_cookie in request.cookies
+        cookie_authenticated_write = request.method not in {"GET", "HEAD", "OPTIONS"} and (
+            visitor_cookie in request.cookies or operator_cookie in request.cookies
         )
         if cookie_authenticated_write and origin and origin != expected_origin:
             metrics.increment("csrf_rejections_total", path=request.url.path)
@@ -391,6 +395,35 @@ def create_app(
             raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "operator API is disabled")
         if credentials is None or credentials.credentials != expected.get_secret_value():
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid operator credentials")
+
+    def operator_session_token(expires: int) -> str:
+        assert settings.operator_api_key is not None
+        signature = hmac_new(
+            settings.operator_api_key.get_secret_value().encode(),
+            str(expires).encode(),
+            "sha256",
+        ).hexdigest()
+        return f"{expires}.{signature}"
+
+    def valid_operator_session(token: str | None) -> bool:
+        if token is None or settings.operator_api_key is None:
+            return False
+        try:
+            expires_text, supplied = token.split(".", 1)
+            expires = int(expires_text)
+        except (TypeError, ValueError):
+            return False
+        return expires > int(datetime.now(UTC).timestamp()) and compare_digest(
+            operator_session_token(expires), token
+        )
+
+    async def form_fields(request: Request) -> dict[str, str]:
+        values = parse_qs((await request.body()).decode("utf-8"), keep_blank_values=True)
+        return {key: items[-1] for key, items in values.items()}
+
+    def require_console_session(token: str | None) -> None:
+        if not valid_operator_session(token):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "operator session expired")
 
     def confirm_action(request: OperatorConfirmation) -> None:
         if not request.confirm:
@@ -803,6 +836,144 @@ def create_app(
     def get_run(run_id: UUID) -> RunResponse:
         run, _ = load_run(run_id)
         return RunResponse.from_record(run)
+
+    def operator_page(title: str, body: str) -> HTMLResponse:
+        return HTMLResponse(f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)} — Rumor Mill Operator</title><style>
+        :root{{color-scheme:dark;--bg:#101719;--panel:#192326;--ink:#eef2e7;--muted:#aab7b1;--ok:#8dd8a5;--warn:#f0c36b;--bad:#ef8c83;--line:#344347}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,sans-serif}}main{{max-width:1100px;margin:auto;padding:2rem}}h1{{font:700 clamp(2rem,6vw,4rem)/1 Georgia,serif}}h2{{margin-top:0}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1rem}}section,.card{{background:var(--panel);border:1px solid var(--line);border-radius:.5rem;padding:1rem;margin:1rem 0}}.ok{{color:var(--ok)}}.warn{{color:var(--warn)}}.bad{{color:var(--bad)}}.muted{{color:var(--muted)}}table{{width:100%;border-collapse:collapse}}th,td{{padding:.6rem;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}}button,input{{font:inherit;padding:.65rem}}button{{background:#d9e6c7;color:#111;border:0;border-radius:.25rem;font-weight:700;cursor:pointer}}form.inline{{display:inline-flex;gap:.5rem;align-items:center;flex-wrap:wrap}}code{{overflow-wrap:anywhere}}a{{color:#b9d9ff}}.notice{{border-left:4px solid var(--warn);padding:.75rem;background:#25291f}}
+        </style></head><body><main>{body}</main></body></html>""")
+
+    @app.get("/operator", response_class=HTMLResponse, include_in_schema=False)
+    def operator_login_page(
+        token: Annotated[str | None, Cookie(alias="rm_operator")] = None,
+    ) -> Response:
+        if valid_operator_session(token):
+            return RedirectResponse("/operator/console", status_code=303)
+        return operator_page(
+            "Sign in",
+            """<h1>Operator sign in</h1><p class="muted">Use the configured operator key. Sessions expire after eight hours.</p><form action="/operator/session" method="post"><label>Operator key <input name="key" type="password" required autocomplete="current-password"></label> <button type="submit">Sign in</button></form>""",
+        )
+
+    @app.post("/operator/session", include_in_schema=False)
+    async def create_operator_session(request: Request) -> Response:
+        fields = await form_fields(request)
+        expected = settings.operator_api_key
+        if expected is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "operator console is disabled")
+        if not compare_digest(fields.get("key", ""), expected.get_secret_value()):
+            return operator_page(
+                "Sign in failed",
+                """<h1>Sign in failed</h1><p class="bad">The operator key was not accepted.</p><p><a href="/operator">Try again</a></p>""",
+            )
+        expires = int((datetime.now(UTC) + timedelta(hours=8)).timestamp())
+        response = RedirectResponse("/operator/console", status_code=303)
+        response.set_cookie(
+            operator_cookie,
+            operator_session_token(expires),
+            max_age=8 * 3600,
+            httponly=True,
+            secure=settings.secure_visitor_cookie,
+            samesite="strict",
+            path="/operator",
+        )
+        return response
+
+    @app.post("/operator/session/logout", include_in_schema=False)
+    def delete_operator_session() -> Response:
+        response = RedirectResponse("/operator", status_code=303)
+        response.delete_cookie(operator_cookie, path="/operator")
+        return response
+
+    @app.get("/operator/console", response_class=HTMLResponse, include_in_schema=False)
+    def operator_console(
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_operator")] = None,
+        message: str | None = None,
+    ) -> Response:
+        if not valid_operator_session(token):
+            return RedirectResponse("/operator", status_code=303)
+        runs = list(database.scalars(select(RunModel).order_by(RunModel.started_at.desc())))
+        heartbeat = database.scalar(select(func.max(WorkerHeartbeatModel.last_seen_at)))
+        stale_before = datetime.now(UTC) - timedelta(seconds=settings.worker_stale_after_seconds)
+        worker_ok = heartbeat is not None and _aware(heartbeat) >= stale_before
+        story = available_story(database)
+        run_cards = []
+        for run in runs:
+            world = database.get(WorldModel, run.world_id)
+            counts: dict[str, int] = {
+                row[0]: row[1]
+                for row in database.execute(
+                    select(JobModel.status, func.count())
+                    .where(JobModel.run_id == run.id)
+                    .group_by(JobModel.status)
+                )
+            }
+            run_cards.append(
+                f"""<section><h2>{escape(world.slug if world else "unknown")} <small class="muted">{run.id}</small></h2><div class="grid"><div><strong>Story</strong><br><span class="{"ok" if run.status == "running" else "warn"}">{escape(run.status)}</span></div><div><strong>Clock</strong><br>{escape(run.clock_mode)} · {_aware(run.simulation_time).strftime("%Y-%m-%d %H:%M UTC")}</div><div><strong>Jobs</strong><br>{sum(counts.values())} total · {counts.get("failed", 0) + counts.get("dead", 0)} failed/dead</div></div><p><a href="/operator/console/runs/{run.id}">Inspect and recover this run →</a></p></section>"""
+            )
+        notice = f'<p class="notice">{escape(message)}</p>' if message else ""
+        availability = "Playable Lighthouse season found" if story else "No playable season"
+        body = f"""<form class="inline" action="/operator/session/logout" method="post" style="float:right"><button>Sign out</button></form><p class="muted">Rumor Mill</p><h1>Live story console</h1>{notice}<div class="grid"><div class="card"><strong>Infrastructure</strong><br><span class="ok">Web and database connected</span></div><div class="card"><strong>Story availability</strong><br><span class="{"ok" if story else "bad"}">{availability}</span></div><div class="card"><strong>Worker</strong><br><span class="{"ok" if worker_ok else "bad"}">{"Fresh" if worker_ok else "Missing or stale"}</span><br><small>{_aware(heartbeat).isoformat() if heartbeat else "No heartbeat"}</small></div><div class="card"><strong>Runs</strong><br>{len(runs)}</div></div>{"".join(run_cards) or "<section><h2>Empty production state</h2><p>No worlds or runs exist. Run the documented Lighthouse bootstrap recovery command.</p></section>"}"""
+        return operator_page("Live story console", body)
+
+    @app.get(
+        "/operator/console/runs/{run_id}", response_class=HTMLResponse, include_in_schema=False
+    )
+    def operator_run_console(
+        run_id: UUID,
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_operator")] = None,
+        message: str | None = None,
+    ) -> Response:
+        if not valid_operator_session(token):
+            return RedirectResponse("/operator", status_code=303)
+        run = database.get(RunModel, run_id)
+        if run is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+        jobs = list(
+            database.scalars(
+                select(JobModel)
+                .where(JobModel.run_id == run_id, JobModel.status.in_(("failed", "dead")))
+                .order_by(JobModel.created_at.desc())
+            )
+        )
+        reports = list(
+            database.scalars(
+                select(NarrativeReportModel)
+                .where(NarrativeReportModel.run_id == run_id)
+                .order_by(NarrativeReportModel.created_at.desc())
+            )
+        )
+        recaps = list(
+            database.scalars(
+                select(ArtifactModel)
+                .where(ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap")
+                .order_by(ArtifactModel.generated_at.desc())
+            )
+        )
+        job_rows = (
+            "".join(
+                f"""<tr><td>{escape(job.kind)}</td><td>{escape(job.status)}</td><td>{job.attempts}/{job.max_attempts}</td><td>{escape((job.error or "No error recorded")[:240])}</td><td>{f'<form class="inline" action="/operator/console/jobs/{job.id}/retry" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm</label><button>Retry</button></form>' if job.status == "failed" and job.attempts < job.max_attempts else "Not eligible"}</td></tr>"""
+                for job in jobs
+            )
+            or '<tr><td colspan="5">No failed or dead jobs.</td></tr>'
+        )
+        report_rows = (
+            "".join(
+                f"""<tr><td>{escape(report.category)}</td><td>{escape(report.target_kind)}</td><td><code>{escape(json.dumps(report.diagnostic_refs))}</code></td><td><form class="inline" action="/operator/console/reports/{report.id}/review" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm</label><button>Mark reviewed</button></form></td></tr>"""
+                for report in reports
+            )
+            or '<tr><td colspan="4">No narrative reports.</td></tr>'
+        )
+        recap_rows = (
+            "".join(
+                f"""<tr><td>{escape(recap.title)}</td><td>{escape(str(recap.payload.get("publication_state", recap.payload.get("visibility", "public"))))}</td><td><form class="inline" action="/operator/console/recaps/{recap.id}/{"unpublish" if recap.payload.get("visibility", "public") == "public" else "publish"}" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm</label><button>{"Unpublish" if recap.payload.get("visibility", "public") == "public" else "Publish"}</button></form></td></tr>"""
+                for recap in recaps
+            )
+            or '<tr><td colspan="3">No recaps.</td></tr>'
+        )
+        notice = f'<p class="notice">{escape(message)}</p>' if message else ""
+        body = f"""<p><a href="/operator/console">← All runs</a></p><h1>Run recovery</h1><p><code>{run.id}</code></p>{notice}<section><h2>Simulation</h2><p>Status: <strong>{escape(run.status)}</strong> · Clock: {escape(run.clock_mode)} · {_aware(run.simulation_time).isoformat()}</p><form class="inline" action="/operator/console/runs/{run.id}/{"pause" if run.status == "running" else "resume"}" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm state change</label><button>{"Pause" if run.status == "running" else "Resume"}</button></form> <form class="inline" action="/operator/console/runs/{run.id}/advance" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm tick</label><button>Advance one tick</button></form></section><section><h2>Failed and dead jobs</h2><table><tr><th>Kind</th><th>State</th><th>Attempts</th><th>Safe error summary</th><th>Recovery</th></tr>{job_rows}</table></section><section><h2>Narrative reports</h2><table><tr><th>Category</th><th>Target</th><th>Diagnostic references</th><th>Review</th></tr>{report_rows}</table></section><section><h2>Daily recaps</h2><table><tr><th>Title</th><th>Publication</th><th>Action</th></tr>{recap_rows}</table></section>"""
+        return operator_page("Run recovery", body)
 
     @app.get(
         "/operator/runs/{run_id}",
@@ -2174,6 +2345,85 @@ def create_app(
             )
             for model in models
         ]
+
+    async def confirmed_console_request(request: Request, token: str | None) -> None:
+        require_console_session(token)
+        if (await form_fields(request)).get("confirm") != "yes":
+            raise HTTPException(status.HTTP_409_CONFLICT, "explicit confirmation is required")
+
+    def console_redirect(run_id: UUID, message: str) -> RedirectResponse:
+        return RedirectResponse(
+            f"/operator/console/runs/{run_id}?message={quote(message)}", status_code=303
+        )
+
+    @app.post("/operator/console/runs/{run_id}/{action}", include_in_schema=False)
+    async def console_run_action(
+        run_id: UUID,
+        action: Literal["pause", "resume", "advance"],
+        request: Request,
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_operator")] = None,
+    ) -> RedirectResponse:
+        await confirmed_console_request(request, token)
+        confirmation = OperatorConfirmation(confirm=True)
+        if action == "advance":
+            operator_advance(run_id, confirmation, database)
+        else:
+            set_run_state(run_id, confirmation, database, action=action)
+        return console_redirect(run_id, f"Run {action} succeeded.")
+
+    @app.post("/operator/console/jobs/{job_id}/retry", include_in_schema=False)
+    async def console_retry_job(
+        job_id: UUID,
+        request: Request,
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_operator")] = None,
+    ) -> RedirectResponse:
+        await confirmed_console_request(request, token)
+        job = database.get(JobModel, job_id)
+        if job is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
+        run_id = job.run_id
+        retry_operator_job(job_id, OperatorConfirmation(confirm=True), database)
+        return console_redirect(run_id, "Job retry queued.")
+
+    @app.post("/operator/console/recaps/{recap_id}/{action}", include_in_schema=False)
+    async def console_recap_action(
+        recap_id: UUID,
+        action: Literal["publish", "unpublish"],
+        request: Request,
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_operator")] = None,
+    ) -> RedirectResponse:
+        await confirmed_console_request(request, token)
+        recap = database.get(ArtifactModel, recap_id)
+        if recap is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "recap not found")
+        run_id = recap.run_id
+        set_recap_publication(
+            recap_id, OperatorConfirmation(confirm=True), database, published=action == "publish"
+        )
+        return console_redirect(run_id, f"Recap {action} succeeded.")
+
+    @app.post("/operator/console/reports/{report_id}/review", include_in_schema=False)
+    async def console_review_report(
+        report_id: UUID,
+        request: Request,
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_operator")] = None,
+    ) -> RedirectResponse:
+        await confirmed_console_request(request, token)
+        report = database.get(NarrativeReportModel, report_id)
+        if report is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
+        audit(
+            database,
+            action="report.review",
+            resource_kind="report",
+            resource_id=report_id,
+        )
+        database.commit()
+        return console_redirect(report.run_id, "Narrative report marked reviewed in the audit log.")
 
     return app
 

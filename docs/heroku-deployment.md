@@ -2,7 +2,8 @@
 
 Rumor Mill runs as three declared process types:
 
-- `release` applies Alembic migrations before new web and worker code is released.
+- `release` applies Alembic migrations and then idempotently bootstraps the validated Lighthouse
+  world and a running wall-clock season before new web and worker code is released.
 - `web` serves FastAPI through Uvicorn on Heroku's assigned `$PORT`.
 - `worker` advances every running wall-clock simulation from durable Postgres state.
 
@@ -54,6 +55,35 @@ heroku logs --tail -a <app-name>
 The smoke check requires liveness, readiness (including a recent worker heartbeat), and a packaged
 CSS asset. If release migrations fail, Heroku does not deploy the new release. Inspect the release
 log, correct the migration or configuration, and redeploy; never bypass the release phase.
+
+Verify bootstrap independently after a release:
+
+```shell
+heroku run python -m rumor_mill.bootstrap --database-url "$DATABASE_URL" -a <app-name>
+heroku pg:psql -a <app-name> -c "select w.slug, r.status, r.clock_mode from worlds w join runs r on r.world_id=w.id where w.slug='lighthouse';"
+curl -i -c /tmp/rumor-mill-cookie -X POST https://<app-name>.herokuapp.com/lighthouse/session
+curl -i -b /tmp/rumor-mill-cookie https://<app-name>.herokuapp.com/lighthouse/today
+```
+
+The command validates the packaged world before opening a transaction. Re-running it selects the
+existing running Lighthouse season; it does not replace world data, visitor state, canon, or a live
+run. A validation or database error exits non-zero and therefore fails the release visibly. If it
+fails, inspect `heroku logs --tail --ps release`, correct the packaged definition or database
+availability, and redeploy. For an already-migrated release, run the same bootstrap command as a
+one-off dyno and repeat the verification queries. Never delete a world or run to force recovery.
+
+## Operator console
+
+Visit `https://<app-name>.herokuapp.com/operator` and sign in with the value of
+`RUMOR_MILL_OPERATOR_API_KEY`. The single-operator session is stored in a secure, HTTP-only,
+same-site cookie and expires after eight hours; sign out from the console when finished. An expired
+session redirects to sign-in. Rotate the Heroku config value to immediately invalidate all existing
+sessions.
+
+The console separates infrastructure, story availability, worker freshness, and per-run job state.
+It lists safe diagnostics only—no private conversation content or secrets. Pause, resume, one-tick
+advance, job retry, recap publication, and report review all require a confirmation checkbox and
+write the existing append-only operator audit log.
 
 ## Rollback and recovery
 
