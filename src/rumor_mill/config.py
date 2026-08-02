@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     visitor_session_days: int = Field(default=365, ge=1, le=730)
     secure_visitor_cookie: bool = True
     conversation_message_limit: int = Field(default=50, ge=1, le=500)
+    operation_token_budget: int = Field(default=20_000, ge=0)
+    daily_token_budget: int = Field(default=1_000_000, ge=0)
+    estimated_cost_per_million_input_tokens: float = Field(default=1.25, ge=0)
+    estimated_cost_per_million_output_tokens: float = Field(default=10.0, ge=0)
+    requests_per_minute: int = Field(default=120, ge=0)
+    active_visitor_window_minutes: int = Field(default=15, ge=1)
+    worker_stale_after_seconds: int = Field(default=600, ge=1)
+    provider_health_required: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="RUMOR_MILL_", extra="ignore")
 
