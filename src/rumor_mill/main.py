@@ -511,7 +511,7 @@ def create_app(
     def unavailable_story_document() -> str:
         return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Story unavailable — The Lighthouse</title><meta property="og:title" content="Story unavailable — The Lighthouse"><meta property="og:image" content="/static/lighthouse-social.jpg"><meta name="twitter:card" content="summary_large_image"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/lighthouse.css"></head>
-<body><header class="site-header"><a class="wordmark" href="/lighthouse"><span>The Lighthouse</span></a><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/town">Town</a><a href="/lighthouse/archive">Archive</a></nav></header><main id="story-unavailable" class="season-archive"><div class="state-banner" role="status"><strong>No live story is available right now.</strong> Greyhaven cannot be entered until a season is running.</div><p><a class="primary-action" href="/lighthouse">Return to The Lighthouse</a></p></main></body></html>"""
+<body><header class="site-header"><a class="wordmark" href="/lighthouse"><span>The Lighthouse</span></a><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/town">Town</a><a href="/lighthouse/archive">Archive</a></nav></header><main id="story-unavailable" class="season-archive"><div class="state-banner" role="status"><strong>The current season is unavailable.</strong> Your saved conversations are safe. Return to The Lighthouse and try entering Greyhaven again later.</div><p><a class="primary-action" href="/lighthouse">Return to The Lighthouse</a></p></main></body></html>"""
 
     def load_run(run_id: UUID) -> tuple[RunRecord, WorldDefinition]:
         with uow_factory() as unit_of_work:
@@ -606,10 +606,11 @@ def create_app(
         document = (web_root / "lighthouse.html").read_text(encoding="utf-8")
         if unavailable:
             ledger = """<form class="visitor-ledger" action="/lighthouse/session" method="post">
-            <p><strong>Your visitor’s ledger</strong> Greyhaven stores a private, pseudonymous record of your conversations so characters can remember you. It expires after one year, is never shared with other visitors, and you can erase it at any time.</p>
-            <button class="primary-action" type="submit">Enter and remember me <span aria-hidden="true">→</span></button>
+            <p><strong>Enter the current season</strong> Start with today’s public dispatch, then choose where to explore and which resident to question.</p>
+            <button class="primary-action" type="submit">Enter Greyhaven <span aria-hidden="true">→</span></button>
+            <p><strong>Your private visitor ledger</strong> lets residents remember your conversations. It expires after one year, is never shared with other visitors, and you can erase it at any time.</p>
           </form>"""
-            unavailable_markup = """<div class="visitor-ledger state-banner" role="status"><p><strong>No live story is available right now.</strong> Greyhaven cannot be entered until a season is running.</p></div>"""
+            unavailable_markup = """<div class="visitor-ledger state-banner" role="status"><p><strong>The current season is unavailable.</strong> No progress was changed. Return later and try entering Greyhaven again.</p></div>"""
             document = document.replace(ledger, unavailable_markup)
         return HTMLResponse(document)
 
@@ -1224,7 +1225,7 @@ def create_app(
                 state_model.relationship_summary
                 if state_model is not None
                 else (
-                    "Seen in a published dispatch. You have not spoken yet."
+                    "Seen in a public dispatch. You have not spoken privately yet."
                     if recap_seen
                     else "Not yet encountered."
                 )
@@ -1272,7 +1273,7 @@ def create_app(
             )
             relationship = state_model.relationship_summary
         elif recap_seen:
-            relationship = "You know them from a published dispatch, but have not spoken."
+            relationship = "You know them from a public dispatch, but have not spoken privately."
             memory_markup = '<li class="quiet-note">No private encounters yet.</li>'
         else:
             relationship = "You have not encountered this person yet."
@@ -1304,7 +1305,7 @@ def create_app(
 
     def story_so_far(recaps: list[ArtifactModel]) -> str:
         if not recaps:
-            return "No public dispatch has been bound into the archive yet."
+            return "No public dispatch has been published to the archive yet. Return later to read the first one."
         summaries = [DailyRecap.model_validate(item.payload["recap"]).dek for item in recaps]
         return " ".join(summaries[-4:])
 
@@ -1317,7 +1318,7 @@ def create_app(
     ) -> str:
         return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(title)} — The Lighthouse</title><meta name="description" content="{escape(description)}"><meta property="og:type" content="article"><meta property="og:title" content="{escape(title)} — The Lighthouse"><meta property="og:description" content="{escape(description)}"><meta property="og:url" content="{escape(canonical_path)}"><meta property="og:site_name" content="The Lighthouse"><meta property="og:image" content="/static/lighthouse-social.jpg"><meta name="twitter:card" content="summary_large_image"><link rel="canonical" href="{escape(canonical_path)}"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/lighthouse.css"></head>
-<body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {story_day(run)} <span aria-hidden="true">·</span> Season archive</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town">Town</a><a href="/lighthouse/runs/{run.id}/archive" aria-current="page">Archive</a></nav></header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only published presentation artifacts appear in this archive.</p><p><span class="status-dot" aria-hidden="true"></span>Bound in story order</p></footer></body></html>"""
+<body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {story_day(run)} <span aria-hidden="true">·</span> Season archive</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town">Town</a><a href="/lighthouse/runs/{run.id}/archive" aria-current="page">Archive</a></nav></header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only public dispatches appear here; private conversations stay private.</p><p><span class="status-dot" aria-hidden="true"></span>Published in season order</p></footer></body></html>"""
 
     @app.get(
         "/lighthouse/runs/{run_id}/archive",
@@ -1349,12 +1350,12 @@ def create_app(
                 f"""<li class="episode-entry"><a href="/lighthouse/runs/{run.id}/archive/{artifact.id}"><span class="episode-number">{index + 1:02}</span><span class="episode-entry__copy"><time datetime="{artifact.generated_at.isoformat()}">{recap.story_date.strftime("%B %d, %Y")}</time><strong>{escape(recap.headline)}</strong><span>{escape(recap.dek)}</span></span></a><details><summary>Panels in this episode</summary><ol>{panel_titles or "<li>No panels were published.</li>"}</ol></details></li>"""
             )
         empty = (
-            '<li class="archive-empty"><strong>The binding is empty.</strong><span>The first published daily dispatch will appear here automatically.</span></li>'
+            '<li class="archive-empty"><strong>The archive is waiting.</strong><span>No dispatch has been published yet. Your progress is safe; return later to read the first one.</span></li>'
             if not episode_items
             else ""
         )
         summary = story_so_far(visible)
-        content = f"""<header class="archive-heading"><p class="eyebrow">The season so far</p><h1>Previously,<br>in Greyhaven.</h1><p>{escape(summary)}</p><div class="spoiler-boundary" role="status"><strong>Your reading boundary</strong><span>{escape(boundary_note)}</span></div></header><ol class="episode-reel">{"".join(episode_items)}{empty}</ol>"""
+        content = f"""<header class="archive-heading"><p class="eyebrow">The season so far</p><h1>Previously,<br>in Greyhaven.</h1><p>{escape(summary)}</p><div class="spoiler-boundary" role="status"><strong>How far you have read</strong><span>{escape(boundary_note)}</span></div></header><ol class="episode-reel">{"".join(episode_items)}{empty}</ol>"""
         return HTMLResponse(
             archive_shell(
                 run,

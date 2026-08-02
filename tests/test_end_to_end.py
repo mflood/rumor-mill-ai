@@ -98,7 +98,8 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
             with TestClient(app, cookies={"rm_visitor": "not-a-valid-session"}) as invalid_visit:
                 unavailable = invalid_visit.get("/lighthouse/today")
                 assert unavailable.status_code == 503
-                assert "No live story is available right now" in unavailable.text
+                assert "The current season is unavailable" in unavailable.text
+                assert "saved conversations are safe" in unavailable.text
 
             opened = first_visit.post(
                 f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}

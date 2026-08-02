@@ -513,7 +513,7 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     ledger = client.get(f"/lighthouse/runs/{run_id}/people")
     assert ledger.status_code == 200
     assert "Ada now recognizes your careful questions" in ledger.text
-    assert "Seen in a published dispatch. You have not spoken yet." in ledger.text
+    assert "Seen in a public dispatch. You have not spoken privately yet." in ledger.text
     profile = client.get(f"/lighthouse/runs/{run_id}/people/ada")
     assert profile.status_code == 200
     assert "Short observations followed by a careful question" in profile.text
@@ -525,7 +525,7 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     assert "OTHER VISITOR" not in profile.text
     assert "possesses the observatory key" not in profile.text
     unknown = client.get(f"/lighthouse/runs/{run_id}/people/bea")
-    assert "published dispatch, but have not spoken" in unknown.text
+    assert "public dispatch, but have not spoken privately" in unknown.text
     assert "No private encounters yet" in unknown.text
     unencountered = client.get(f"/lighthouse/runs/{run_id}/people/cy")
     assert "You have not encountered this person yet" in unencountered.text
@@ -658,8 +658,8 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
 
     empty_run = UUID(str(initialize(client)["id"]))
     empty = client.get(f"/lighthouse/runs/{empty_run}/archive")
-    assert "The binding is empty" in empty.text
-    assert "No public dispatch has been bound" in empty.text
+    assert "The archive is waiting" in empty.text
+    assert "No public dispatch has been published" in empty.text
 
 
 def test_players_report_messages_panels_and_episodes_with_safe_references(api) -> None:  # type: ignore[no-untyped-def]
