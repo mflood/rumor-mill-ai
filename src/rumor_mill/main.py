@@ -561,13 +561,18 @@ def create_app(
 
     def available_story(database: Session) -> RunModel | None:
         """Return the newest live season available for public entry."""
-        return database.scalar(
-            select(RunModel)
-            .join(WorldModel, WorldModel.id == RunModel.world_id)
-            .where(RunModel.status == RunStatus.RUNNING)
-            .order_by((WorldModel.slug == "lighthouse").desc(), RunModel.started_at.desc())
-            .limit(1)
-        )
+        try:
+            return database.scalar(
+                select(RunModel)
+                .join(WorldModel, WorldModel.id == RunModel.world_id)
+                .where(RunModel.status == RunStatus.RUNNING)
+                .order_by((WorldModel.slug == "lighthouse").desc(), RunModel.started_at.desc())
+                .limit(1)
+            )
+        except Exception:  # A database outage cannot be presented as a playable story.
+            database.rollback()
+            logger.exception("story_availability_check_failed")
+            return None
 
     def product_readiness(database: Session) -> tuple[bool, ProductReadinessReason]:
         """Validate the public Lighthouse world and require a running season."""
@@ -596,11 +601,6 @@ def create_app(
             return None
         run = database.get(RunModel, visitor.active_run_id)
         return run if run is not None and run.status == RunStatus.RUNNING else None
-
-    def unavailable_story_document() -> str:
-        return """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Story unavailable — The Lighthouse</title><meta property="og:title" content="Story unavailable — The Lighthouse"><meta property="og:image" content="/static/lighthouse-social.jpg"><meta name="twitter:card" content="summary_large_image"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/lighthouse.css"></head>
-<body><header class="site-header"><a class="wordmark" href="/lighthouse"><span>The Lighthouse</span></a><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/town">Town</a><a href="/lighthouse/archive">Archive</a></nav></header><main id="story-unavailable" class="season-archive"><div class="state-banner" role="status"><strong>The current season is unavailable.</strong> Your saved conversations are safe. Return to The Lighthouse and try entering Greyhaven again later.</div><p><a class="primary-action" href="/lighthouse">Return to The Lighthouse</a></p></main></body></html>"""
 
     def load_run(run_id: UUID) -> tuple[RunRecord, WorldDefinition]:
         with uow_factory() as unit_of_work:
@@ -715,28 +715,22 @@ def create_app(
         return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
 
     @app.get("/lighthouse", response_class=HTMLResponse, include_in_schema=False)
-    def lighthouse(unavailable: Annotated[bool, Query()] = False) -> HTMLResponse:
+    def lighthouse(database: Annotated[Session, Depends(session)]) -> HTMLResponse:
         """Render the public, server-first Lighthouse story shell."""
-        document = (web_root / "lighthouse.html").read_text(encoding="utf-8")
-        if unavailable:
-            ledger = """<form class="visitor-ledger" action="/lighthouse/session" method="post">
-            <p><strong>Enter the current season</strong> Start with today’s public dispatch, then choose where to explore and which resident to question.</p>
-            <button class="primary-action" type="submit">Enter Greyhaven <span aria-hidden="true">→</span></button>
-            <p><strong>Your private visitor ledger</strong> lets residents remember your conversations. It expires after one year, is never shared with other visitors, and you can erase it at any time.</p>
-          </form>"""
-            unavailable_markup = """<div class="visitor-ledger state-banner" role="status"><p><strong>The current season is unavailable.</strong> No progress was changed. Return later and try entering Greyhaven again.</p></div>"""
-            document = document.replace(ledger, unavailable_markup)
+        story_available = available_story(database) is not None
+        template = "lighthouse.html" if story_available else "lighthouse_unavailable.html"
+        document = (web_root / template).read_text(encoding="utf-8")
         return HTMLResponse(document)
 
     @app.get("/lighthouse/today", response_class=HTMLResponse, include_in_schema=False)
     def lighthouse_today(
         database: Annotated[Session, Depends(session)],
         token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
-    ) -> HTMLResponse:
+    ) -> Response:
         """Render the latest spoiler-safe daily briefing without requiring JavaScript."""
         run_model = active_story(database, token)
         if run_model is None:
-            return HTMLResponse(unavailable_story_document(), status_code=503)
+            return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         run, world = load_run(run_model.id)
         harbor = next(
             (
@@ -774,7 +768,7 @@ def create_app(
         """Render an authored, useful town map when no live run has been selected."""
         run = active_story(database, token)
         if run is None:
-            return HTMLResponse(unavailable_story_document(), status_code=503)
+            return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         return RedirectResponse(f"/lighthouse/runs/{run.id}/town", status_code=307)
 
     @app.get("/lighthouse/archive", response_class=HTMLResponse, include_in_schema=False)
@@ -785,7 +779,7 @@ def create_app(
         """Render a useful archive fallback when no live run has been selected."""
         run = active_story(database, token)
         if run is None:
-            return HTMLResponse(unavailable_story_document(), status_code=503)
+            return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         return RedirectResponse(f"/lighthouse/runs/{run.id}/archive", status_code=307)
 
     @app.get("/lighthouse/feedback", response_class=HTMLResponse, include_in_schema=False)
@@ -796,9 +790,10 @@ def create_app(
     @app.post("/lighthouse/session", include_in_schema=False)
     def enter_lighthouse(database: Annotated[Session, Depends(session)]) -> RedirectResponse:
         run = available_story(database)
-        destination = "/lighthouse/today" if run is not None else "/lighthouse?unavailable=true"
-        response = RedirectResponse(destination, status_code=status.HTTP_303_SEE_OTHER)
-        new_visitor(database, response, active_run_id=run.id if run is not None else None)
+        if run is None:
+            return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
+        response = RedirectResponse("/lighthouse/today", status_code=status.HTTP_303_SEE_OTHER)
+        new_visitor(database, response, active_run_id=run.id)
         return response
 
     @app.post("/lighthouse/session/reset", include_in_schema=False)

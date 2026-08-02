@@ -1,8 +1,13 @@
 """Application smoke tests."""
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
-from rumor_mill.main import app
+from rumor_mill.adapters.persistence import create_database_engine, create_session_factory
+from rumor_mill.adapters.persistence.models import Base, VisitorModel
+from rumor_mill.config import Settings
+from rumor_mill.main import app, create_app
 
 
 def test_health_check() -> None:
@@ -22,15 +27,17 @@ def test_lighthouse_shell_is_server_rendered_and_semantic() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert '<main id="story"' in response.text
-    assert '<nav aria-label="Primary navigation">' in response.text
+    assert 'aria-label="Story navigation unavailable while between seasons"' in response.text
     assert 'href="#story">Skip to the story</a>' in response.text
-    assert "The story continues while you are away" in response.text
-    assert "Enter Greyhaven" in response.text
-    assert "Read</strong> today’s public dispatch" in response.text
-    assert "Explore</strong> a location" in response.text
-    assert "question residents</strong> in private" in response.text
-    assert "Return later:" in response.text
-    assert "private visitor ledger" in response.text
+    assert "Between seasons" in response.text
+    assert "No story is progressing" in response.text
+    assert "Day 1" not in response.text
+    assert "Night" not in response.text
+    assert "The story continues while you are away" not in response.text
+    assert "Enter Greyhaven" not in response.text
+    assert response.text.count('aria-disabled="true"') == 3
+    assert "prior visitor data is safe" in response.text
+    assert "no visitor record or cookie will be created" in response.text
 
 
 def test_lighthouse_entry_failure_disables_the_inert_entry_action() -> None:
@@ -38,39 +45,54 @@ def test_lighthouse_entry_failure_disables_the_inert_entry_action() -> None:
         response = client.get("/lighthouse?unavailable=true")
 
     assert response.status_code == 200
-    assert "The current season is unavailable" in response.text
+    assert "Between seasons" in response.text
     assert "Enter Greyhaven" not in response.text
+
+
+def test_failed_lighthouse_entry_persists_no_visitor_or_cookie(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'empty-entry.db'}"
+    engine = create_database_engine(database_url)
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    empty_app = create_app(Settings(database_url=database_url), factory)
+
+    with TestClient(empty_app) as client:
+        response = client.post("/lighthouse/session", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/lighthouse"
+    assert "rm_visitor" not in response.cookies
+    assert "set-cookie" not in response.headers
+    with factory() as database:
+        assert database.query(VisitorModel).count() == 0
+    engine.dispose()
 
 
 def test_today_page_uses_the_consistent_unavailable_state_without_a_selected_story() -> None:
     with TestClient(app) as client:
         response = client.get("/lighthouse/today")
 
-    assert response.status_code == 503
-    assert '<main id="story-unavailable"' in response.text
-    assert "The current season is unavailable" in response.text
-    assert "saved conversations are safe" in response.text
-    assert "Return to The Lighthouse" in response.text
+    assert response.status_code == 200
+    assert '<main id="story"' in response.text
+    assert "Between seasons" in response.text
 
 
 def test_town_uses_the_consistent_unavailable_state_without_a_selected_story() -> None:
     with TestClient(app) as client:
         response = client.get("/lighthouse/town")
 
-    assert response.status_code == 503
-    assert '<main id="story-unavailable"' in response.text
-    assert 'role="status"' in response.text
-    assert "The current season is unavailable" in response.text
+    assert response.status_code == 200
+    assert "Between seasons" in response.text
+    assert response.history[0].status_code == 303
 
 
 def test_archive_uses_the_consistent_unavailable_state_without_a_selected_story() -> None:
     with TestClient(app) as client:
         response = client.get("/lighthouse/archive")
 
-    assert response.status_code == 503
-    assert '<main id="story-unavailable"' in response.text
-    assert "The current season is unavailable" in response.text
-    assert 'role="status"' in response.text
+    assert response.status_code == 200
+    assert "Between seasons" in response.text
+    assert response.history[0].status_code == 303
 
 
 def test_lighthouse_visual_system_includes_accessibility_states() -> None:

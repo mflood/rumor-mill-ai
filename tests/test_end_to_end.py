@@ -74,6 +74,12 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
             )
             assert advanced.json()["ticks"] == 3
 
+            landing = first_visit.get("/lighthouse")
+            assert landing.status_code == 200
+            assert "Day 1" in landing.text
+            assert "The story continues while you are away" in landing.text
+            assert "Enter Greyhaven" in landing.text
+
             entered = first_visit.post("/lighthouse/session", follow_redirects=False)
             assert entered.status_code == 303
             assert entered.headers["location"] == "/lighthouse/today"
@@ -97,9 +103,9 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
 
             with TestClient(app, cookies={"rm_visitor": "not-a-valid-session"}) as invalid_visit:
                 unavailable = invalid_visit.get("/lighthouse/today")
-                assert unavailable.status_code == 503
-                assert "The current season is unavailable" in unavailable.text
-                assert "saved conversations are safe" in unavailable.text
+                assert unavailable.status_code == 200
+                assert unavailable.history[0].status_code == 303
+                assert "Enter Greyhaven" in unavailable.text
 
             opened = first_visit.post(
                 f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}

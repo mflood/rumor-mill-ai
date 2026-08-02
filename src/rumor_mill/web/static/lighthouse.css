@@ -60,6 +60,8 @@ a { color: inherit; }
 .wordmark { display: inline-flex; align-items: center; gap: .75rem; text-decoration: none; font-weight: 700; }
 .wordmark__beam { width: .9rem; height: 2.7rem; background: linear-gradient(90deg, var(--sun) 0 30%, transparent 30%); clip-path: polygon(0 0, 100% 50%, 0 100%); }
 .town-clock { margin: 0; color: var(--fog); white-space: nowrap; }
+.unavailable-navigation span { padding: .7rem; color: var(--fog); opacity: .6; text-decoration: line-through; text-decoration-thickness: .08rem; }
+.status-dot--quiet { background: var(--fog); box-shadow: none; }
 .status-dot { display: inline-block; width: .5rem; height: .5rem; margin-right: .5rem; border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 .2rem rgb(255 96 79 / 15%); }
 nav { display: flex; gap: .35rem; }
 nav a { min-height: 2.75rem; padding: .8rem .75rem; text-decoration: none; }
@@ -118,6 +120,7 @@ h1 em { color: var(--signal); font-weight: 700; }
 .visitor-ledger { margin-top: var(--space-3); padding: var(--space-2); border-left: .35rem solid var(--sun); background: rgb(11 45 61 / 70%); }
 .visitor-ledger p { max-width: 32rem; margin: 0 0 var(--space-2); color: var(--fog); font-size: .82rem; }
 .visitor-ledger strong { display: block; margin-bottom: .35rem; color: var(--paper); font: 700 .7rem var(--utility); letter-spacing: .08em; text-transform: uppercase; }
+.empty-season-note p:last-child { margin-bottom: 0; }
 .text-action { border: 0; padding: .35rem 0; background: transparent; color: var(--fog); font: inherit; text-decoration: underline; text-underline-offset: .3rem; text-transform: uppercase; cursor: pointer; }
 .text-action:hover { color: var(--sun); }
 .how-it-works { margin-top: var(--space-3); color: var(--fog); font-size: .88rem; }
