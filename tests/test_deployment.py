@@ -28,12 +28,14 @@ from rumor_mill.adapters.persistence.models import (
     WorkerHeartbeatModel,
     WorldModel,
 )
+from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.bootstrap import _bootstrap_session
 from rumor_mill.config import Settings
 from rumor_mill.deployment import smoke
 from rumor_mill.engine.lighthouse_pipeline import LighthouseStoryHandler
 from rumor_mill.engine.ports import JobRecord, JobStatus, RunRecord, RunStatus, WorldRecord
 from rumor_mill.main import create_app
+from rumor_mill.observability import MetricsRegistry
 from rumor_mill.worker import SimulationWorker, main, worker_id
 
 ROOT = Path(__file__).parents[1]
@@ -259,6 +261,64 @@ def test_worker_executes_authored_routine_output(tmp_path: Path) -> None:
     engine.dispose()
 
 
+def test_worker_uses_provider_outside_completion_and_reports_job_metrics(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'provider-story.db'}"
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    engine = create_database_engine(url)
+    factory = create_session_factory(engine)
+    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    with factory.begin() as database:
+        bootstrapped = _bootstrap_session(database, definition)
+        run = database.get(RunModel, bootstrapped.run_id)
+        assert run is not None
+        started_at = run.started_at.replace(tzinfo=UTC)
+
+    provider = DeterministicFakeProvider(
+        {
+            "off_screen_scene": {
+                "title": "Generated at the headland",
+                "duration_minutes": 5,
+                "events": [{"summary": "The lamp remains dark."}],
+                "presentation_hooks": [
+                    {
+                        "kind": "story_card",
+                        "title": "Generated at the headland",
+                        "body": "The scheduled beat reaches Greyhaven.",
+                        "event_indexes": [0],
+                    }
+                ],
+            }
+        }
+    )
+    metrics = MetricsRegistry()
+    worker = SimulationWorker(
+        factory,
+        worker_id="worker.provider",
+        run_batch_size=1,
+        job_batch_size=1,
+        provider=provider,
+        metrics=metrics,
+        clock=lambda: started_at + timedelta(minutes=10),
+    )
+
+    assert worker.poll_once() == 1
+    with factory() as database:
+        job = database.scalar(select(JobModel).where(JobModel.run_id == bootstrapped.run_id))
+        artifact = database.scalar(
+            select(ArtifactModel).where(ArtifactModel.run_id == bootstrapped.run_id)
+        )
+        assert job is not None and job.status == "completed"
+        assert artifact is not None and artifact.title == "Generated at the headland"
+    rendered = metrics.render()
+    assert 'rumor_mill_story_jobs_total{state="claimed"} 1' in rendered
+    assert 'rumor_mill_story_jobs_total{state="completed"} 1' in rendered
+    assert "The lamp remains dark" not in rendered
+    engine.dispose()
+
+
 def test_story_job_failure_leaves_pipeline_fresh_for_retry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     url = f"sqlite:///{tmp_path / 'story-retry.db'}"
     config = Config(str(ROOT / "alembic.ini"))
@@ -328,6 +388,12 @@ def test_story_mutation_rejects_a_deleted_run(tmp_path: Path) -> None:
     ):
         mutation(unit_of_work)
     engine.dispose()
+
+
+def test_story_handler_requires_provider_and_storage_together() -> None:
+    provider = DeterministicFakeProvider({})
+    with pytest.raises(ValueError, match="configured together"):
+        LighthouseStoryHandler(provider)
 
 
 def test_product_readiness_requires_valid_running_lighthouse_season(tmp_path: Path) -> None:

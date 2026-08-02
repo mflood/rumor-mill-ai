@@ -15,11 +15,13 @@ from rumor_mill.adapters.persistence import (
     create_session_factory,
 )
 from rumor_mill.adapters.persistence.models import WorkerHeartbeatModel
+from rumor_mill.adapters.providers import create_model_provider
 from rumor_mill.config import Settings, get_settings
 from rumor_mill.engine.jobs import DurableJobWorker
 from rumor_mill.engine.lighthouse_pipeline import LighthouseWorkSource, lighthouse_handlers
+from rumor_mill.engine.ports import JobStatus, ModelProvider
 from rumor_mill.engine.scheduling import SimulationScheduler
-from rumor_mill.observability import configure_json_logging
+from rumor_mill.observability import MetricsRegistry, configure_json_logging, observed_job
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +44,18 @@ class SimulationWorker:
         worker_id: str,
         poll_seconds: float = 5.0,
         run_batch_size: int = 100,
+        job_batch_size: int = 100,
+        provider: ModelProvider | None = None,
+        metrics: MetricsRegistry | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
         self._worker_id = worker_id
         self._poll_seconds = poll_seconds
         self._run_batch_size = run_batch_size
+        self._job_batch_size = job_batch_size
+        self._provider = provider
+        self._metrics = metrics or MetricsRegistry()
         self._clock = clock
 
     def _unit_of_work(self) -> SqlAlchemyUnitOfWork:
@@ -97,25 +105,43 @@ class SimulationWorker:
                     },
                 )
 
+        handlers = (
+            lighthouse_handlers()
+            if self._provider is None
+            else lighthouse_handlers(self._provider, self._unit_of_work)
+        )
+        observed_handlers = {
+            kind: observed_job(handler, self._metrics) for kind, handler in handlers.items()
+        }
         job_worker = DurableJobWorker(
             self._unit_of_work,
-            lighthouse_handlers(),
+            observed_handlers,
             worker_id=self._worker_id,
             clock=self._clock,
         )
-        completed = 0
-        for _ in range(self._run_batch_size):
+        counts = {"claimed": 0, "completed": 0, "retried": 0, "dead": 0}
+        for _ in range(self._job_batch_size):
             job_result = job_worker.run_once()
             if job_result.job is None:
                 break
+            counts["claimed"] += 1
             if job_result.completed:
-                completed += 1
-        if completed:
+                counts["completed"] += 1
+            else:
+                counts["dead"] += int(job_result.job.status is JobStatus.DEAD)
+                counts["retried"] += int(job_result.job.status is JobStatus.FAILED)
+        with self._unit_of_work() as unit_of_work:
+            pending = len(unit_of_work.jobs.list(status=JobStatus.PENDING, limit=1_000))
+        for state, value in (*counts.items(), ("pending", pending)):
+            self._metrics.increment("story_jobs_total", value, state=state)
+        self._metrics.set("story_jobs_pending", pending)
+        if counts["claimed"] or pending:
+            logger.info("story_jobs_polled", extra={**counts, "pending": pending})
+        if counts["completed"]:
             with self._session_factory.begin() as database:
                 heartbeat = database.get(WorkerHeartbeatModel, self._worker_id)
                 assert heartbeat is not None
                 heartbeat.last_story_job_completed_at = self._clock()
-            logger.info("story_jobs_completed", extra={"jobs_completed": completed})
         return advanced
 
     def run_forever(self, stop: Event | None = None) -> None:
@@ -139,13 +165,36 @@ def worker_id() -> str:
 def main(settings: Settings | None = None) -> None:
     settings = settings or get_settings()
     configure_json_logging()
+    metrics = MetricsRegistry()
     engine = create_database_engine(settings.database_url)
     factory = create_session_factory(engine)
+    provider = create_model_provider(
+        settings,
+        metrics=metrics,
+        fake_responses={
+            "off_screen_scene": {
+                "title": "Greyhaven dispatch",
+                "duration_minutes": 5,
+                "events": [{"summary": "The scheduled story moment unfolds."}],
+                "presentation_hooks": [
+                    {
+                        "kind": "story_card",
+                        "title": "Greyhaven dispatch",
+                        "body": "A new moment unfolds in Greyhaven.",
+                        "event_indexes": [0],
+                    }
+                ],
+            }
+        },
+    )
     SimulationWorker(
         factory,
         worker_id=worker_id(),
         poll_seconds=settings.worker_poll_seconds,
         run_batch_size=settings.worker_run_batch_size,
+        job_batch_size=settings.worker_job_batch_size,
+        provider=provider,
+        metrics=metrics,
     ).run_forever()
 
 

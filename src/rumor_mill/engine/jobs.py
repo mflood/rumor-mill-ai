@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from rumor_mill.engine.ports import JobRecord, UnitOfWork
+from rumor_mill.engine.ports import JobRecord, ProviderError, UnitOfWork
 
 
 class PreparedMutation(Protocol):
@@ -84,7 +84,16 @@ class DurableJobWorker:
                     worker_id=self._worker_id,
                     now=failed_at,
                     retry_at=failed_at + delay,
-                    error=f"{type(exc).__name__}: {exc}"[:4000],
+                    error=self._safe_error(exc),
                 )
                 unit_of_work.commit()
             return WorkerResult(failed)
+
+    @staticmethod
+    def _safe_error(exc: Exception) -> str:
+        """Return a low-cardinality diagnostic without prompts, story text, or secrets."""
+        if isinstance(exc, ProviderError):
+            return exc.code
+        if isinstance(exc, KeyError):
+            return "unknown_job_kind"
+        return f"{type(exc).__name__}: {exc}"[:4000]

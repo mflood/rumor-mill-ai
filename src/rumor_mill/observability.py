@@ -45,6 +45,11 @@ class JsonFormatter(logging.Formatter):
         "status_code",
         "playable_story_available",
         "readiness_reason",
+        "claimed",
+        "completed",
+        "retried",
+        "dead",
+        "pending",
     )
 
     def format(self, record: logging.LogRecord) -> str:

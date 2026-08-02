@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     worker_stale_after_seconds: int = Field(default=600, ge=1)
     worker_poll_seconds: float = Field(default=5.0, gt=0, le=300)
     worker_run_batch_size: int = Field(default=100, ge=1, le=1_000)
+    worker_job_batch_size: int = Field(default=100, ge=1, le=1_000)
     provider_health_required: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="RUMOR_MILL_", extra="ignore")
