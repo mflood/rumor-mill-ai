@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_FROZEN: "true"
+  UV_NO_PROGRESS: "true"
+  RUMOR_MILL_DATABASE_URL: "sqlite+pysqlite:///:memory:"
+
+jobs:
+  quality:
+    name: Formatting, linting, and typing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - run: uv sync --frozen --dev
+      - name: Check lock file
+        run: uv lock --check
+      - name: Check formatting
+        run: uv run ruff format --check .
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - run: uv sync --frozen --dev
+      - run: uv run pytest
+
+  migrations:
+    name: Migration upgrade and rollback
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: rumor_mill_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rumor_mill_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      RUMOR_MILL_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/rumor_mill_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - run: uv sync --frozen --dev
+      - name: Apply every migration
+        run: uv run alembic upgrade head
+      - name: Verify rollback chain
+        run: uv run alembic downgrade base
+      - name: Reapply every migration
+        run: uv run alembic upgrade head
+
+  world-validation:
+    name: World validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - run: uv sync --frozen --dev
+      - name: Validate and deterministically simulate Lighthouse
+        env:
+          RUMOR_MILL_DATABASE_URL: sqlite:////tmp/lighthouse-ci.db
+        run: >-
+          uv run python -m rumor_mill.worlds.seeding
+          docs/worlds/lighthouse/world.json
+          --database-url "$RUMOR_MILL_DATABASE_URL"
+          --seed 60
+          --transcript /tmp/lighthouse-smoke-transcript.md
+
+  narrative-evals:
+    name: Critical narrative evaluations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - run: uv sync --frozen --dev
+      - run: make eval
+
+  deploy:
+    name: Deploy and smoke production
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [quality, tests, migrations, world-validation, narrative-evals]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - run: uv sync --frozen --dev
+      - name: Deploy the checked commit to Heroku
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ vars.HEROKU_APP_NAME }}
+        run: git push "https://heroku:${HEROKU_API_KEY}@git.heroku.com/${HEROKU_APP_NAME}.git" HEAD:main
+      - name: Verify the production release
+        env:
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+        run: uv run python scripts/smoke_deployment.py "$PRODUCTION_URL"

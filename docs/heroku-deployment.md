@@ -57,6 +57,9 @@ log, correct the migration or configuration, and redeploy; never bypass the rele
 
 ## Rollback and recovery
 
+The full failed-migration, failed-smoke, and rollback procedures are in
+[`ci-cd.md`](ci-cd.md). Follow that runbook before changing production data or schema state.
+
 ```shell
 heroku releases -a <app-name>
 heroku rollback <release> -a <app-name>
