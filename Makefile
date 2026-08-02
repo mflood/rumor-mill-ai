@@ -4,7 +4,7 @@ RUMOR_MILL_API_PORT ?= 8787
 RUMOR_MILL_POSTGRES_PORT ?= 55432
 export RUMOR_MILL_API_PORT RUMOR_MILL_POSTGRES_PORT RUMOR_MILL_DATABASE_URL
 
-.PHONY: setup run test test-unit test-integration test-e2e test-parallel lint format ci eval db-up db-down db-migrate db-rollback seed-lighthouse
+.PHONY: setup run test test-unit test-integration test-e2e test-parallel lint format ci eval db-up db-down db-migrate db-rollback seed-lighthouse preview-world
 
 setup:
 	uv sync --frozen
@@ -67,3 +67,8 @@ seed-lighthouse:
 	uv run python -m rumor_mill.worlds.seeding docs/worlds/lighthouse/world.json \
 		--database-url $(RUMOR_MILL_DATABASE_URL) --seed 60 \
 		--transcript artifacts/lighthouse-smoke-transcript.md
+
+WORLD ?= docs/worlds/starter/world.json
+
+preview-world:
+	uv run python -m rumor_mill.worlds.preview $(WORLD)

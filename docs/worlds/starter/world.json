@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "id": "bell-at-dusk",
+    "title": "The Bell at Dusk",
+    "summary": "Two neighbors investigate why a silent station bell rang at sunset.",
+    "author": "Your Name",
+    "content_rating": "Everyone"
+  },
+  "cast": [
+    {
+      "id": "mara",
+      "name": "Mara Vale",
+      "description": "A practical baker who trusts what she can verify.",
+      "home_location_id": "station",
+      "public_voice": "Direct, warm, and impatient with superstition."
+    },
+    {
+      "id": "oren",
+      "name": "Oren Pike",
+      "description": "The station caretaker, protective of its history.",
+      "home_location_id": "station",
+      "public_voice": "Measured and precise, especially when withholding something."
+    }
+  ],
+  "locations": [
+    {
+      "id": "station",
+      "name": "Old Hill Station",
+      "description": "A disused rail platform whose bell has no rope.",
+      "purpose": "A compact meeting place for discovery and confrontation.",
+      "atmosphere": "Cooling stone, flour on the wind, and a bell that should be silent.",
+      "clue_ids": ["blue-thread"],
+      "presentation_copy": "The old station waits above town, its bell dark against the sunset."
+    }
+  ],
+  "initial_relationships": [
+    {
+      "id": "mara-trusts-oren",
+      "source_character_id": "mara",
+      "target_character_id": "oren",
+      "kind": "friend",
+      "visibility": "participants"
+    }
+  ],
+  "truth": [
+    {
+      "id": "oren-rang-bell",
+      "statement": "Oren rang the station bell using a temporary blue cord.",
+      "character_ids": ["oren"],
+      "location_ids": ["station"]
+    }
+  ],
+  "secrets": [
+    {
+      "id": "bell-was-warning",
+      "statement": "Oren rang the bell to warn Mara that the hillside path had collapsed.",
+      "holder_ids": ["oren"],
+      "known_by_ids": ["oren"],
+      "truth_id": "oren-rang-bell"
+    }
+  ],
+  "clues": [
+    {
+      "id": "blue-thread",
+      "name": "Blue thread",
+      "description": "A fresh strand caught on the bell wheel."
+    }
+  ],
+  "beat_graph": {
+    "entry_beat_ids": ["impossible-bell"],
+    "beats": [
+      {
+        "id": "impossible-bell",
+        "title": "The Impossible Bell",
+        "summary": "The station bell rings at dusk and Mara finds blue thread on its wheel.",
+        "character_ids": ["mara", "oren"],
+        "location_id": "station",
+        "discovers_clue_ids": ["blue-thread"],
+        "role": "inciting-incident",
+        "earliest_day": 1,
+        "latest_day": 1,
+        "participation": "visitor-influenced"
+      },
+      {
+        "id": "ask-oren",
+        "title": "A Question on the Platform",
+        "summary": "Mara asks Oren whether the bell was a warning; he admits what he did.",
+        "character_ids": ["mara", "oren"],
+        "location_id": "station",
+        "depends_on": ["impossible-bell"],
+        "reveals_secret_ids": ["bell-was-warning"],
+        "establishes_truth_ids": ["oren-rang-bell"],
+        "role": "reveal",
+        "earliest_day": 2,
+        "latest_day": 3
+      }
+    ]
+  },
+  "routines": [
+    {
+      "id": "oren-evening-check",
+      "character_id": "oren",
+      "location_id": "station",
+      "days": [1, 2, 3],
+      "start_time": "17:00",
+      "end_time": "19:00",
+      "activity": "Inspecting the bell and watching the damaged hillside path.",
+      "public_activity": "Closing the old station for the evening."
+    }
+  ],
+  "travel_routes": []
+}
