@@ -583,6 +583,11 @@ def create_app(
         """Render a useful archive fallback when no live run has been selected."""
         return HTMLResponse((web_root / "archive.html").read_text(encoding="utf-8"))
 
+    @app.get("/lighthouse/feedback", response_class=HTMLResponse, include_in_schema=False)
+    def lighthouse_feedback() -> HTMLResponse:
+        """Offer a stable, privacy-conscious route for public product feedback."""
+        return HTMLResponse((web_root / "feedback.html").read_text(encoding="utf-8"))
+
     @app.post("/lighthouse/session", include_in_schema=False)
     def enter_lighthouse(database: Annotated[Session, Depends(session)]) -> RedirectResponse:
         response = RedirectResponse("/lighthouse/today", status_code=status.HTTP_303_SEE_OTHER)
@@ -1219,7 +1224,7 @@ def create_app(
         content: str,
     ) -> str:
         return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(title)} — The Lighthouse</title><meta name="description" content="{escape(description)}"><meta property="og:type" content="article"><meta property="og:title" content="{escape(title)} — The Lighthouse"><meta property="og:description" content="{escape(description)}"><meta property="og:url" content="{escape(canonical_path)}"><meta property="og:site_name" content="The Lighthouse"><link rel="canonical" href="{escape(canonical_path)}"><link rel="stylesheet" href="/static/lighthouse.css"></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(title)} — The Lighthouse</title><meta name="description" content="{escape(description)}"><meta property="og:type" content="article"><meta property="og:title" content="{escape(title)} — The Lighthouse"><meta property="og:description" content="{escape(description)}"><meta property="og:url" content="{escape(canonical_path)}"><meta property="og:site_name" content="The Lighthouse"><meta property="og:image" content="/static/lighthouse-social.jpg"><meta name="twitter:card" content="summary_large_image"><link rel="canonical" href="{escape(canonical_path)}"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/lighthouse.css"></head>
 <body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {story_day(run)} <span aria-hidden="true">·</span> Season archive</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town">Town</a><a href="/lighthouse/runs/{run.id}/archive" aria-current="page">Archive</a></nav></header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only published presentation artifacts appear in this archive.</p><p><span class="status-dot" aria-hidden="true"></span>Bound in story order</p></footer></body></html>"""
 
     @app.get(
