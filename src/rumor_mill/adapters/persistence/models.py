@@ -302,6 +302,20 @@ class WorkerHeartbeatModel(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class OperatorAuditModel(IdMixin, CreatedMixin, Base):
+    """Append-only record of privileged operational changes."""
+
+    __tablename__ = "operator_audit_entries"
+
+    actor: Mapped[str] = mapped_column(String(80), nullable=False)
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    resource_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+    __table_args__ = (Index("ix_operator_audit_created", "created_at"),)
+
+
 class ArtifactModel(IdMixin, CreatedMixin, Base):
     __tablename__ = "artifacts"
 

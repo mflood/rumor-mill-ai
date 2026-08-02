@@ -22,6 +22,7 @@ from rumor_mill.adapters.persistence.models import (
     EventModel,
     JobModel,
     NarrativeReportModel,
+    OperatorAuditModel,
     VisitorCharacterStateModel,
     VisitorModel,
 )
@@ -1164,3 +1165,122 @@ def test_operator_api_can_be_disabled(tmp_path: Path) -> None:
         )
     engine.dispose()
     assert response.status_code == 503
+
+
+def test_operator_controls_require_auth_confirmation_and_write_audit_entries(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run = initialize(client)
+    run_id = run["id"]
+    operator = {"Authorization": "Bearer operator-secret"}
+
+    assert client.get(f"/operator/runs/{run_id}").status_code == 401
+    missing_run = uuid4()
+    assert (
+        client.post(
+            f"/operator/runs/{missing_run}/pause",
+            headers=operator,
+            json={"confirm": True},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/operator/runs/{missing_run}/advance",
+            headers=operator,
+            json={"confirm": True},
+        ).status_code
+        == 404
+    )
+    unconfirmed = client.post(f"/operator/runs/{run_id}/pause", headers=operator, json={})
+    assert unconfirmed.status_code == 409
+    paused = client.post(f"/operator/runs/{run_id}/pause", headers=operator, json={"confirm": True})
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+    resumed = client.post(
+        f"/operator/runs/{run_id}/resume", headers=operator, json={"confirm": True}
+    )
+    assert resumed.json()["status"] == "running"
+    advanced = client.post(
+        f"/operator/runs/{run_id}/advance", headers=operator, json={"confirm": True}
+    )
+    assert advanced.json()["ticks"] == 1
+
+    now = datetime.now(UTC)
+    with factory() as database:
+        failed = JobModel(
+            run_id=UUID(str(run_id)),
+            idempotency_key=f"operator:{uuid4()}",
+            kind="scene",
+            status="failed",
+            scheduled_at=now,
+            available_at=now,
+            attempts=2,
+            max_attempts=3,
+            payload={},
+            error="provider unavailable",
+        )
+        database.add(failed)
+        database.commit()
+        job_id = failed.id
+
+    retried = client.post(
+        f"/operator/jobs/{job_id}/retry", headers=operator, json={"confirm": True}
+    )
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "pending"
+    assert (
+        client.post(
+            f"/operator/jobs/{uuid4()}/retry",
+            headers=operator,
+            json={"confirm": True},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/operator/jobs/{job_id}/retry",
+            headers=operator,
+            json={"confirm": True},
+        ).status_code
+        == 409
+    )
+    status_response = client.get(f"/operator/runs/{run_id}", headers=operator).json()
+    assert status_response["pending_jobs"] >= 1
+    assert client.get(f"/operator/runs/{run_id}/reports", headers=operator).json() == []
+
+    generated = client.post(f"/api/v1/runs/{run_id}/recaps/daily", headers=operator, json={}).json()
+    recap_id = generated["id"]
+    assert (
+        client.post(
+            f"/operator/recaps/{uuid4()}/publish",
+            headers=operator,
+            json={"confirm": True},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/operator/recaps/{recap_id}/unpublish", headers=operator, json={"confirm": True}
+        ).status_code
+        == 200
+    )
+    assert client.get(f"/api/v1/runs/{run_id}/recaps/today").status_code == 404
+    assert (
+        client.post(
+            f"/operator/recaps/{recap_id}/publish", headers=operator, json={"confirm": True}
+        ).status_code
+        == 200
+    )
+
+    schema_paths = client.get("/openapi.json").json()["paths"]
+    assert not any(path.startswith("/operator/") for path in schema_paths)
+    with factory() as database:
+        actions = set(database.scalars(select(OperatorAuditModel.action)))
+    assert {
+        "run.pause",
+        "run.resume",
+        "run.advance",
+        "job.retry",
+        "recap.unpublish",
+        "recap.publish",
+    } <= actions
