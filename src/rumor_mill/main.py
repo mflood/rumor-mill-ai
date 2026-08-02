@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -328,7 +328,15 @@ def create_app(
         token = bind_correlation(request_id)
         started = datetime.now(UTC)
         key = request.client.host if request.client else "unknown"
-        if request.url.path not in {
+        origin = request.headers.get("origin")
+        expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+        cookie_authenticated_write = (
+            request.method not in {"GET", "HEAD", "OPTIONS"} and visitor_cookie in request.cookies
+        )
+        if cookie_authenticated_write and origin and origin != expected_origin:
+            metrics.increment("csrf_rejections_total", path=request.url.path)
+            response = PlainTextResponse("Cross-origin request rejected.", status_code=403)
+        elif request.url.path not in {
             "/health",
             "/health/live",
             "/health/ready",
@@ -339,6 +347,13 @@ def create_app(
         else:
             response = await call_next(request)
         response.headers["X-Request-ID"] = correlation_id.get() or ""
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "same-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+            "form-action 'self'; object-src 'none'"
+        )
         elapsed = (datetime.now(UTC) - started).total_seconds()
         metrics.increment(
             "http_requests_total", method=request.method, status=str(response.status_code)
@@ -428,6 +443,22 @@ def create_app(
         database.refresh(visitor)
         set_visitor_cookie(response, token)
         return visitor
+
+    def delete_visitor_data(database: Session, visitor: VisitorModel) -> None:
+        """Permanently remove the pseudonymous visitor and every visitor-owned record."""
+        database.execute(
+            delete(NarrativeReportModel).where(NarrativeReportModel.visitor_id == visitor.id)
+        )
+        database.execute(
+            delete(ConversationModel).where(ConversationModel.visitor_id == visitor.id)
+        )
+        database.execute(
+            delete(VisitorCharacterStateModel).where(
+                VisitorCharacterStateModel.visitor_id == visitor.id
+            )
+        )
+        database.delete(visitor)
+        database.commit()
 
     def require_visitor(
         database: Annotated[Session, Depends(session)],
@@ -563,8 +594,7 @@ def create_app(
         database: Annotated[Session, Depends(session)],
         visitor: Annotated[VisitorModel, Depends(require_visitor)],
     ) -> RedirectResponse:
-        visitor.reset_at = datetime.now(UTC)
-        database.commit()
+        delete_visitor_data(database, visitor)
         response = RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         response.delete_cookie(visitor_cookie, path="/")
         return response
@@ -581,8 +611,16 @@ def create_app(
         tags=["visitors"],
     )
     def create_visitor_session(
-        response: Response, database: Annotated[Session, Depends(session)]
+        response: Response,
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
     ) -> VisitorSessionResponse:
+        if token is not None:
+            current = database.scalar(
+                select(VisitorModel).where(VisitorModel.token_hash == token_digest(token))
+            )
+            if current is not None:
+                delete_visitor_data(database, current)
         visitor = new_visitor(database, response)
         return VisitorSessionResponse(
             visitor_id=visitor.id,
@@ -610,8 +648,7 @@ def create_app(
         database: Annotated[Session, Depends(session)],
         visitor: Annotated[VisitorModel, Depends(require_visitor)],
     ) -> None:
-        visitor.reset_at = datetime.now(UTC)
-        database.commit()
+        delete_visitor_data(database, visitor)
         response.delete_cookie(visitor_cookie, path="/")
 
     @app.post(

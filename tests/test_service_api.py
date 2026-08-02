@@ -979,11 +979,20 @@ def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type:
 
     client.cookies.clear()
     replacement = start_visitor_session(client)
+    replacement_conversation = client.post(
+        f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
+    )
+    assert replacement_conversation.status_code == 201
     assert client.delete("/api/v1/visitors/session").status_code == 204
     assert client.get("/api/v1/visitors/me").status_code == 401
     with factory() as database:
-        reset = database.get(VisitorModel, UUID(str(replacement["visitor_id"])))
-        assert reset is not None and reset.reset_at is not None
+        assert database.get(VisitorModel, UUID(str(replacement["visitor_id"]))) is None
+        assert (
+            database.query(VisitorCharacterStateModel)
+            .filter(VisitorCharacterStateModel.visitor_id == UUID(str(replacement["visitor_id"])))
+            .count()
+            == 0
+        )
 
     # The server-rendered flow uses the same secure session lifecycle.
     entered = client.post("/lighthouse/session", follow_redirects=False)
@@ -992,6 +1001,33 @@ def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type:
     forgotten = client.post("/lighthouse/session/reset", follow_redirects=False)
     assert forgotten.status_code == 303
     assert forgotten.headers["location"] == "/lighthouse"
+
+
+def test_browser_security_controls_and_session_rotation(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    first = start_visitor_session(client)
+
+    response = client.get("/api/v1/visitors/me")
+    assert response.headers["content-security-policy"].startswith("default-src 'self'")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "same-origin"
+    assert "access-control-allow-origin" not in response.headers
+
+    rejected = client.delete(
+        "/api/v1/visitors/session", headers={"Origin": "https://attacker.example"}
+    )
+    assert rejected.status_code == 403
+    assert client.get("/api/v1/visitors/me").status_code == 200
+
+    rotated = client.post("/api/v1/visitors/session", headers={"Origin": "http://testserver"})
+    assert rotated.status_code == 201
+    assert rotated.json()["visitor_id"] != first["visitor_id"]
+    with factory() as database:
+        assert database.get(VisitorModel, UUID(str(first["visitor_id"]))) is None
+
+    client.cookies.set("rm_visitor", "unknown-expired-token")
+    replacement = client.post("/api/v1/visitors/session", headers={"Origin": "http://testserver"})
+    assert replacement.status_code == 201
 
 
 def test_streaming_conversation_is_idempotent_private_and_recovers(api) -> None:  # type: ignore[no-untyped-def]
