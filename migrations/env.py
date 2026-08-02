@@ -12,7 +12,9 @@ from rumor_mill.adapters.persistence.models import Base
 config = context.config
 configured_url = config.get_main_option("sqlalchemy.url")
 database_url = resolve_migration_database_url(
-    configured_url, os.environ.get("RUMOR_MILL_DATABASE_URL")
+    configured_url,
+    os.environ.get("RUMOR_MILL_DATABASE_URL"),
+    os.environ.get("DATABASE_URL"),
 )
 config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 if config.config_file_name is not None:
