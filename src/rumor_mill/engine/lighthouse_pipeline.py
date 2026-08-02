@@ -19,7 +19,14 @@ from rumor_mill.engine.domain import (
     Scene,
     SceneId,
 )
-from rumor_mill.engine.ports import GeneratedSceneRecord, JobRecord, RunRecord, UnitOfWork
+from rumor_mill.engine.ports import (
+    GeneratedSceneRecord,
+    JobRecord,
+    ModelProvider,
+    RunRecord,
+    UnitOfWork,
+)
+from rumor_mill.engine.scene_generation import SceneGenerationService, ScenePlan
 from rumor_mill.engine.scheduling import ScheduledWork
 
 LIGHTHOUSE_STORY_JOB = "lighthouse_story"
@@ -94,6 +101,19 @@ class LighthouseWorkSource:
 class LighthouseStoryHandler:
     """Prepare deterministic authored output, then commit it with job completion."""
 
+    def __init__(
+        self,
+        provider: ModelProvider | None = None,
+        unit_of_work_factory: Callable[[], UnitOfWork] | None = None,
+    ) -> None:
+        if (provider is None) != (unit_of_work_factory is None):
+            raise ValueError("provider and unit_of_work_factory must be configured together")
+        self._generator = (
+            None
+            if provider is None or unit_of_work_factory is None
+            else SceneGenerationService(provider, unit_of_work_factory)
+        )
+
     def __call__(self, job: JobRecord):  # type: ignore[no-untyped-def]
         payload = job.payload
         story_kind = str(payload["story_kind"])
@@ -130,6 +150,65 @@ class LighthouseStoryHandler:
             )
             body = summary
 
+        if self._generator is not None:
+            record = self._generator.prepare(
+                ScenePlan(
+                    run_id=job.run_id,
+                    scheduled_at=job.scheduled_at,
+                    participant_ids=participant_ids,
+                    location_id=location_id,
+                    goals=(summary,),
+                    constraints=(
+                        "Respect authored Lighthouse canon and reveal no hidden story text.",
+                        f"Produce a {story_kind} scene titled {title}.",
+                    ),
+                )
+            )
+        else:
+            record = self._authored_record(
+                job,
+                story_kind=story_kind,
+                authored_id=authored_id,
+                title=title,
+                summary=summary,
+                body=body,
+                participant_ids=participant_ids,
+                location_id=location_id,
+                scene_id=scene_id,
+                event_id=event_id,
+                artifact_id=artifact_id,
+                provenance=provenance,
+                lifecycle=lifecycle,
+            )
+
+        def mutation(unit_of_work: UnitOfWork) -> dict[str, Any]:
+            if unit_of_work.runs.get_for_update(job.run_id) is None:
+                raise LookupError(f"run {job.run_id} does not exist")
+            unit_of_work.scenes.add_generated(job.run_id, record)
+            return {
+                "scene_id": str(record.scene.id),
+                "artifact_ids": [str(item.id) for item in record.artifacts],
+            }
+
+        return mutation
+
+    @staticmethod
+    def _authored_record(
+        job: JobRecord,
+        *,
+        story_kind: str,
+        authored_id: str,
+        title: str,
+        summary: str,
+        body: str,
+        participant_ids: tuple[CharacterId, ...],
+        location_id: LocationId,
+        scene_id: SceneId,
+        event_id: EventId,
+        artifact_id: PresentationArtifactId,
+        provenance: Provenance,
+        lifecycle: Lifecycle,
+    ) -> GeneratedSceneRecord:
         event = Event(
             id=event_id,
             occurred_at=job.scheduled_at,
@@ -160,7 +239,7 @@ class LighthouseStoryHandler:
             provenance=provenance,
             lifecycle=lifecycle,
         )
-        record = GeneratedSceneRecord(
+        return GeneratedSceneRecord(
             scene=scene,
             events=(event,),
             claims=(),
@@ -174,14 +253,9 @@ class LighthouseStoryHandler:
             },
         )
 
-        def mutation(unit_of_work: UnitOfWork) -> dict[str, Any]:
-            if unit_of_work.runs.get_for_update(job.run_id) is None:
-                raise LookupError(f"run {job.run_id} does not exist")
-            unit_of_work.scenes.add_generated(job.run_id, record)
-            return {"scene_id": str(scene_id), "artifact_id": str(artifact_id)}
 
-        return mutation
-
-
-def lighthouse_handlers() -> Mapping[str, LighthouseStoryHandler]:
-    return {LIGHTHOUSE_STORY_JOB: LighthouseStoryHandler()}
+def lighthouse_handlers(
+    provider: ModelProvider | None = None,
+    unit_of_work_factory: Callable[[], UnitOfWork] | None = None,
+) -> Mapping[str, LighthouseStoryHandler]:
+    return {LIGHTHOUSE_STORY_JOB: LighthouseStoryHandler(provider, unit_of_work_factory)}

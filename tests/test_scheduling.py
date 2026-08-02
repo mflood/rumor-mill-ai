@@ -25,6 +25,7 @@ from rumor_mill.engine.ports import (
     ClockMode,
     JobRecord,
     JobStatus,
+    ProviderTimeoutError,
     RunRecord,
     RunStatus,
     WorldRecord,
@@ -370,7 +371,7 @@ def test_postgres_concurrent_lighthouse_polls_enqueue_each_item_once() -> None:
         command.downgrade(config, "base")
 
 
-def add_job(factory, run: RunRecord, *, max_attempts: int = 3) -> UUID:  # type: ignore[no-untyped-def]
+def add_job(factory, run: RunRecord, *, max_attempts: int = 3, kind: str = "test") -> UUID:  # type: ignore[no-untyped-def]
     job_id = uuid4()
     with SqlAlchemyUnitOfWork(factory) as unit_of_work:
         unit_of_work.jobs.add_once(
@@ -378,7 +379,7 @@ def add_job(factory, run: RunRecord, *, max_attempts: int = 3) -> UUID:  # type:
                 job_id,
                 run.id,
                 f"test:{job_id}",
-                "test",
+                kind,
                 JobStatus.PENDING,
                 START,
                 {},
@@ -387,6 +388,26 @@ def add_job(factory, run: RunRecord, *, max_attempts: int = 3) -> UUID:  # type:
         )
         unit_of_work.commit()
     return job_id
+
+
+def test_worker_dead_letters_unknown_job_kinds_without_raising(scheduler_database) -> None:  # type: ignore[no-untyped-def]
+    factory = scheduler_database
+    run = seed(factory)
+    job_id = add_job(factory, run, max_attempts=1, kind="unregistered")
+
+    result = DurableJobWorker(
+        lambda: SqlAlchemyUnitOfWork(factory),
+        {},
+        worker_id="worker-unknown",
+        clock=lambda: START,
+    ).run_once()
+
+    assert result.job is not None and result.job.id == job_id
+    assert result.job.status is JobStatus.DEAD
+    assert result.job.error == "unknown_job_kind"
+    assert DurableJobWorker._safe_error(ProviderTimeoutError("private prompt")) == (
+        "provider_timeout"
+    )
 
 
 def test_worker_claims_completes_and_never_runs_job_twice(scheduler_database) -> None:  # type: ignore[no-untyped-def]

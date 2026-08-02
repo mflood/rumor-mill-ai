@@ -221,12 +221,7 @@ class SceneGenerationService:
         self._unit_of_work_factory = unit_of_work_factory
 
     def generate(self, plan: ScenePlan) -> GeneratedSceneRecord:
-        result = self._provider.generate(self._request(plan))
-        if not isinstance(result.data, StructuredSceneOutput):
-            raise TypeError("provider returned an unexpected response model")
-        output = result.data
-        self._validate_against_plan(plan, output)
-        record = self._build_record(plan, output, result)
+        record = self.prepare(plan)
         with self._unit_of_work_factory() as unit_of_work:
             # Serialize scene/event sequence allocation for a run.
             if unit_of_work.runs.get_for_update(plan.run_id) is None:
@@ -234,6 +229,15 @@ class SceneGenerationService:
             unit_of_work.scenes.add_generated(plan.run_id, record)
             unit_of_work.commit()
         return record
+
+    def prepare(self, plan: ScenePlan) -> GeneratedSceneRecord:
+        """Perform provider work and validation without opening a transaction."""
+        result = self._provider.generate(self._request(plan))
+        if not isinstance(result.data, StructuredSceneOutput):
+            raise TypeError("provider returned an unexpected response model")
+        output = result.data
+        self._validate_against_plan(plan, output)
+        return self._build_record(plan, output, result)
 
     @staticmethod
     def _request(plan: ScenePlan) -> GenerationRequest:
