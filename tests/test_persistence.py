@@ -21,11 +21,16 @@ from rumor_mill.adapters.persistence import (
     create_session_factory,
     seed_run,
 )
+from rumor_mill.adapters.persistence.database import (
+    DEFAULT_MIGRATION_DATABASE_URL,
+    resolve_migration_database_url,
+)
 from rumor_mill.adapters.persistence.models import Base, WorldModel
 from rumor_mill.engine.domain import Event, Lifecycle, Provenance, ProvenanceKind
 from rumor_mill.engine.ports import RunRecord, RunStatus, WorldRecord
 
 ROOT = Path(__file__).parents[1]
+pytestmark = pytest.mark.integration
 NOW = datetime(2026, 8, 2, 12, tzinfo=UTC)
 TABLES = {
     "worlds",
@@ -124,6 +129,26 @@ def test_migration_upgrade_indexes_and_downgrade(tmp_path: Path) -> None:
     command.downgrade(config, "base")
     engine = create_database_engine(database_url)
     assert not (set(inspect(engine).get_table_names()) & TABLES)
+    engine.dispose()
+
+
+def test_explicit_migration_url_is_isolated_from_application_environment() -> None:
+    test_url = "sqlite+pysqlite:///:memory:"
+    environment_url = "postgresql://application-database"
+
+    assert resolve_migration_database_url(test_url, environment_url) == test_url
+    assert (
+        resolve_migration_database_url(DEFAULT_MIGRATION_DATABASE_URL, environment_url)
+        == environment_url
+    )
+    assert resolve_migration_database_url(DEFAULT_MIGRATION_DATABASE_URL, None) == (
+        DEFAULT_MIGRATION_DATABASE_URL
+    )
+
+
+def test_database_engine_normalizes_postgres_driver() -> None:
+    engine = create_database_engine("postgresql://user:password@localhost/example")
+    assert engine.url.drivername == "postgresql+psycopg"
     engine.dispose()
 
 

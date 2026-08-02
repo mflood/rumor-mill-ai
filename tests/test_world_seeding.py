@@ -13,6 +13,7 @@ from rumor_mill.worlds import WorldDefinition, load_world, validate_continuity
 from rumor_mill.worlds.seeding import main, smoke_transcript, validate_and_seed
 
 FIXTURE = Path(__file__).parent / "fixtures" / "worlds" / "minimal.json"
+pytestmark = pytest.mark.integration
 LIGHTHOUSE = Path(__file__).parents[1] / "docs" / "worlds" / "lighthouse" / "world.json"
 
 
