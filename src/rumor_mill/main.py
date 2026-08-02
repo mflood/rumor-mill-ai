@@ -12,12 +12,12 @@ from secrets import token_urlsafe
 from typing import Annotated, Any, Generic, Literal, TypeVar
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response, status
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -30,6 +30,7 @@ from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
     ConversationModel,
     EventModel,
+    JobModel,
     NarrativeReportModel,
     VisitorCharacterStateModel,
     VisitorModel,
@@ -59,6 +60,13 @@ from rumor_mill.engine.ports import (
 )
 from rumor_mill.engine.recap import DailyRecap, RecapSource, build_daily_recap
 from rumor_mill.engine.scheduling import SimulationScheduler
+from rumor_mill.observability import (
+    MetricsRegistry,
+    SlidingWindowRateLimiter,
+    bind_correlation,
+    configure_json_logging,
+    correlation_id,
+)
 from rumor_mill.worlds.authoring import AuthoredCharacter, AuthoredLocation, WorldDefinition
 from rumor_mill.worlds.town_state import TownState
 
@@ -71,6 +79,12 @@ class HealthResponse(BaseModel):
 
     status: Literal["ok"]
     environment: str
+
+
+class ReadinessResponse(BaseModel):
+    status: Literal["ok", "degraded"]
+    environment: str
+    components: dict[str, Literal["ok", "degraded"]]
 
 
 class ApiModel(BaseModel):
@@ -238,12 +252,16 @@ def create_app(
 ) -> FastAPI:
     """Build and configure the application."""
     settings = settings or get_settings()
+    if settings.environment not in {"development", "test"}:
+        configure_json_logging()
+    metrics = MetricsRegistry()
     if session_factory is None:
         engine = create_database_engine(settings.database_url)
         session_factory = create_session_factory(engine)
     if conversation_engine is None:
         provider = create_model_provider(
             settings,
+            metrics=metrics,
             fake_responses={
                 "character_conversation": {
                     "reply": "The harbor carries more stories than answers. Ask me what I saw.",
@@ -261,10 +279,50 @@ def create_app(
         version="1.0.0",
         description="Stable application-facing API for Rumor Mill simulations.",
     )
+    app.state.metrics = metrics
+    limiter = SlidingWindowRateLimiter(settings.requests_per_minute)
     web_root = Path(__file__).with_name("web")
     app.mount("/static", StaticFiles(directory=web_root / "static"), name="static")
     bearer = HTTPBearer(auto_error=False)
     visitor_cookie = "rm_visitor"
+
+    @app.middleware("http")
+    async def request_observability(request: Request, call_next: Any) -> Response:
+        supplied = request.headers.get("x-request-id", "")
+        request_id = (
+            supplied if supplied and len(supplied) <= 100 and supplied.isprintable() else None
+        )
+        token = bind_correlation(request_id)
+        started = datetime.now(UTC)
+        key = request.client.host if request.client else "unknown"
+        if request.url.path not in {
+            "/health",
+            "/health/live",
+            "/health/ready",
+            "/metrics",
+        } and not limiter.allow(key):
+            metrics.increment("rate_limit_rejections_total", path=request.url.path)
+            response = PlainTextResponse("Too many requests; retry shortly.", status_code=429)
+        else:
+            response = await call_next(request)
+        response.headers["X-Request-ID"] = correlation_id.get() or ""
+        elapsed = (datetime.now(UTC) - started).total_seconds()
+        metrics.increment(
+            "http_requests_total", method=request.method, status=str(response.status_code)
+        )
+        metrics.increment("http_latency_seconds_total", elapsed, method=request.method)
+        if response.status_code < 400 and request.url.path.endswith("/recaps/daily"):
+            metrics.increment("episode_publications_total")
+        logger.info(
+            "http_request_completed",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+            },
+        )
+        correlation_id.reset(token)
+        return response
 
     def uow_factory() -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(session_factory)
@@ -342,6 +400,73 @@ def create_app(
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     async def health() -> HealthResponse:
         return HealthResponse(status="ok", environment=settings.environment)
+
+    @app.get("/health/live", response_model=HealthResponse, tags=["system"])
+    def liveness() -> HealthResponse:
+        return HealthResponse(status="ok", environment=settings.environment)
+
+    @app.get("/health/ready", response_model=ReadinessResponse, tags=["system"])
+    def readiness(
+        response: Response, database: Annotated[Session, Depends(session)]
+    ) -> ReadinessResponse:
+        components: dict[str, Literal["ok", "degraded"]] = {
+            "web": "ok",
+            "database": "ok",
+            "worker": "ok",
+            "provider": "ok",
+        }
+        try:
+            database.execute(text("SELECT 1"))
+            stale_before = datetime.now(UTC) - timedelta(
+                seconds=settings.worker_stale_after_seconds
+            )
+            stale = database.scalar(
+                select(JobModel.id)
+                .where(
+                    JobModel.status == "running",
+                    JobModel.lease_expires_at < stale_before,
+                )
+                .limit(1)
+            )
+            if stale is not None:
+                components["worker"] = "degraded"
+        except Exception:  # pragma: no cover - requires a runtime database outage
+            components["database"] = "degraded"
+            components["worker"] = "degraded"
+        if settings.provider_health_required and (
+            settings.model_provider == "openai" and settings.openai_api_key is None
+        ):
+            components["provider"] = "degraded"
+        overall: Literal["ok", "degraded"] = (
+            "ok" if all(value == "ok" for value in components.values()) else "degraded"
+        )
+        if overall == "degraded":
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return ReadinessResponse(
+            status=overall, environment=settings.environment, components=components
+        )
+
+    @app.get("/metrics", response_class=PlainTextResponse, tags=["system"])
+    def prometheus_metrics(database: Annotated[Session, Depends(session)]) -> PlainTextResponse:
+        now = datetime.now(UTC)
+        active = database.scalar(
+            select(func.count())
+            .select_from(VisitorModel)
+            .where(
+                VisitorModel.last_seen_at
+                >= now - timedelta(minutes=settings.active_visitor_window_minutes),
+                VisitorModel.reset_at.is_(None),
+                VisitorModel.expires_at > now,
+            )
+        )
+        metrics.set("active_visitors", float(active or 0))
+        lag = database.scalar(
+            select(func.count())
+            .select_from(JobModel)
+            .where(JobModel.status.in_(("pending", "failed")), JobModel.available_at < now)
+        )
+        metrics.set("job_lag_count", float(lag or 0))
+        return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
 
     @app.get("/lighthouse", response_class=HTMLResponse, include_in_schema=False)
     def lighthouse() -> HTMLResponse:

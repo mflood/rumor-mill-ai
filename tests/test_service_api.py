@@ -20,6 +20,7 @@ from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
     Base,
     EventModel,
+    JobModel,
     NarrativeReportModel,
     VisitorCharacterStateModel,
     VisitorModel,
@@ -108,6 +109,21 @@ def start_visitor_session(client: TestClient) -> dict[str, object]:
 def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-def]
     client, factory = api
     assert client.get("/api/v1/health").json() == {"status": "ok", "environment": "test"}
+    readiness = client.get("/health/ready")
+    assert readiness.status_code == 200
+    assert readiness.json()["components"] == {
+        "web": "ok",
+        "database": "ok",
+        "worker": "ok",
+        "provider": "ok",
+    }
+    request = client.get("/health/live", headers={"X-Request-ID": "trace-123"})
+    assert request.headers["X-Request-ID"] == "trace-123"
+    metrics = client.get("/metrics")
+    assert metrics.status_code == 200
+    assert "rumor_mill_http_requests_total" in metrics.text
+    assert "rumor_mill_active_visitors" in metrics.text
+    assert "rumor_mill_job_lag_count" in metrics.text
     run = initialize(client)
     run_id = run["id"]
 
@@ -223,6 +239,90 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
     schema = client.get("/openapi.json").json()
     assert "/api/v1/runs/{run_id}/ticks" in schema["paths"]
     assert schema["info"]["version"] == "1.0.0"
+
+
+def test_readiness_reports_stale_worker_and_rate_limit_is_graceful(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run = initialize(client)
+    client.post(
+        f"/api/v1/runs/{run['id']}/ticks",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"ticks": 1},
+    )
+    with factory() as database:
+        now = datetime.now(UTC)
+        job = JobModel(
+            id=uuid4(),
+            run_id=UUID(str(run["id"])),
+            idempotency_key=f"readiness:{uuid4()}",
+            kind="scene",
+            status="running",
+            scheduled_at=now,
+            available_at=now,
+            lease_expires_at=now - timedelta(hours=1),
+            attempts=1,
+            max_attempts=3,
+            payload={},
+        )
+        database.add(job)
+        database.commit()
+
+    readiness = client.get("/health/ready")
+    assert readiness.status_code == 503
+    assert readiness.json()["status"] == "degraded"
+    assert readiness.json()["components"]["worker"] == "degraded"
+
+
+def test_configured_request_rate_limit_returns_retryable_429(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = f"sqlite:///{tmp_path / 'limited.db'}"
+    engine = create_database_engine(url)
+    Base.metadata.create_all(engine)
+    configured_logs: list[bool] = []
+    monkeypatch.setattr(
+        "rumor_mill.main.configure_json_logging", lambda: configured_logs.append(True)
+    )
+    application = create_app(
+        Settings(
+            database_url=url,
+            requests_per_minute=1,
+            environment="production",
+            _env_file=None,
+        ),
+        create_session_factory(engine),
+    )
+    with TestClient(application) as client:
+        assert client.get("/openapi.json").status_code == 200
+        limited = client.get("/openapi.json")
+    engine.dispose()
+    assert limited.status_code == 429
+    assert "retry shortly" in limited.text
+    assert configured_logs == [True]
+
+
+def test_readiness_reports_required_unconfigured_provider(tmp_path: Path) -> None:
+    url = f"sqlite:///{tmp_path / 'provider-health.db'}"
+    engine = create_database_engine(url)
+    Base.metadata.create_all(engine)
+    provider = MutableConversationProvider({})
+    provider.set_response()
+    application = create_app(
+        Settings(
+            database_url=url,
+            model_provider="openai",
+            provider_health_required=True,
+            openai_api_key=None,
+            _env_file=None,
+        ),
+        create_session_factory(engine),
+        conversation_engine=CharacterConversationEngine(provider),
+    )
+    with TestClient(application) as client:
+        readiness = client.get("/health/ready")
+    engine.dispose()
+    assert readiness.status_code == 503
+    assert readiness.json()["components"]["provider"] == "degraded"
 
 
 def test_daily_recap_is_public_only_cached_and_operator_editable(api) -> None:  # type: ignore[no-untyped-def]
