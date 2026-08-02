@@ -7,7 +7,13 @@ from types import TracebackType
 from typing import Any, Protocol, Self
 from uuid import UUID
 
-from rumor_mill.engine.domain import Event
+from rumor_mill.engine.domain import (
+    Claim,
+    Event,
+    Memory,
+    PresentationArtifact,
+    Scene,
+)
 
 
 class RunStatus(StrEnum):
@@ -73,6 +79,18 @@ class JobRecord:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class GeneratedSceneRecord:
+    """A fully validated scene bundle persisted as one transaction."""
+
+    scene: Scene
+    events: tuple[Event, ...]
+    claims: tuple[Claim, ...]
+    memories: tuple[Memory, ...]
+    artifacts: tuple[PresentationArtifact, ...]
+    generation: dict[str, Any]
+
+
 class WorldRepository(Protocol):
     def add(self, world: WorldRecord) -> None: ...
 
@@ -101,6 +119,12 @@ class EventRepository(Protocol):
     def get(self, event_id: UUID) -> Event | None: ...
 
 
+class SceneRepository(Protocol):
+    def add_generated(self, run_id: UUID, record: GeneratedSceneRecord) -> None: ...
+
+    def get(self, scene_id: UUID) -> GeneratedSceneRecord | None: ...
+
+
 class UnitOfWork(Protocol):
     @property
     def worlds(self) -> WorldRepository: ...
@@ -113,6 +137,9 @@ class UnitOfWork(Protocol):
 
     @property
     def jobs(self) -> JobRepository: ...
+
+    @property
+    def scenes(self) -> SceneRepository: ...
 
     def __enter__(self) -> Self: ...
 

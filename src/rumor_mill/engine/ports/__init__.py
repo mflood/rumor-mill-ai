@@ -21,6 +21,7 @@ from rumor_mill.engine.ports.provider_errors import (
 from rumor_mill.engine.ports.repositories import (
     ClockMode,
     EventRepository,
+    GeneratedSceneRecord,
     JobRecord,
     JobRepository,
     JobStatus,
@@ -34,6 +35,7 @@ from rumor_mill.engine.ports.repositories import (
 
 __all__ = [
     "ClockMode",
+    "GeneratedSceneRecord",
     "EventRepository",
     "GenerationRequest",
     "GenerationResult",
