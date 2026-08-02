@@ -6,7 +6,8 @@ their own beliefs, memories, relationships, and incomplete version of events.
 
 [Play The Lighthouse](https://rumormill-5e6f53c74e73.herokuapp.com/lighthouse) ·
 [Read the architecture](docs/architecture/README.md) ·
-[Author a world](docs/world-authoring-format.md)
+[Author a world](docs/world-authoring-format.md) ·
+[Contribute](CONTRIBUTING.md)
 
 ![The Lighthouse opening screen](docs/images/lighthouse-demo.jpg)
 
@@ -156,3 +157,11 @@ failure scenarios.
 - [Narrative evaluations](docs/narrative-evaluations.md)
 - [Privacy and retention](docs/security/privacy-and-retention.md)
 - [Heroku deployment and operations](docs/heroku-deployment.md)
+
+## Community and license
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), including the provenance and
+human-authorship expectations for world and AI-assisted content, before opening a pull request.
+Community participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md); support and
+private security-reporting routes are documented in [SUPPORT.md](SUPPORT.md) and
+[SECURITY.md](SECURITY.md). Rumor Mill AI is available under the [MIT License](LICENSE).
