@@ -606,6 +606,28 @@ def create_app(
         run = database.get(RunModel, visitor.active_run_id)
         return run if run is not None and run.status == RunStatus.RUNNING else None
 
+    def run_story_day(run: RunModel | RunRecord) -> int:
+        simulation_time = run.simulation_time or run.started_at
+        return max(1, min(14, (simulation_time.date() - run.started_at.date()).days + 1))
+
+    def live_clock_label(run: RunModel | RunRecord) -> str:
+        simulation_time = run.simulation_time or run.started_at
+        return f"Day {run_story_day(run)} · {simulation_time.strftime('%H:%M')}"
+
+    def latest_published_recap(database: Session, run_id: UUID) -> DailyRecap | None:
+        artifacts = database.scalars(
+            select(ArtifactModel)
+            .where(ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap")
+            .order_by(ArtifactModel.generated_at.desc(), ArtifactModel.id.desc())
+        )
+        for artifact in artifacts:
+            if (
+                artifact.payload.get("visibility", "public") == "public"
+                and "recap" in artifact.payload
+            ):
+                return DailyRecap.model_validate(artifact.payload["recap"])
+        return None
+
     def load_run(run_id: UUID) -> tuple[RunRecord, WorldDefinition]:
         with uow_factory() as unit_of_work:
             run = unit_of_work.runs.get(run_id)
@@ -779,9 +801,15 @@ def create_app(
     @app.get("/lighthouse", response_class=HTMLResponse, include_in_schema=False)
     def lighthouse(database: Annotated[Session, Depends(session)]) -> HTMLResponse:
         """Render the public, server-first Lighthouse story shell."""
-        story_available = available_story(database) is not None
+        run = available_story(database)
+        story_available = run is not None
         template = "lighthouse.html" if story_available else "lighthouse_unavailable.html"
         document = (web_root / template).read_text(encoding="utf-8")
+        if run is not None:
+            document = document.replace(
+                'Day 1 <span aria-hidden="true">·</span> <span>Night</span>',
+                escape(live_clock_label(run)),
+            )
         return HTMLResponse(document)
 
     @app.get("/lighthouse/today", response_class=HTMLResponse, include_in_schema=False)
@@ -810,6 +838,18 @@ def create_app(
             world.cast[0],
         )
         document = (web_root / "today.html").read_text(encoding="utf-8")
+        live_label = escape(live_clock_label(run))
+        document = document.replace('Day 1 <span aria-hidden="true">·</span> Night', live_label)
+        latest_recap = latest_published_recap(database, run.id)
+        dispatch_day = (
+            max(1, min(14, (latest_recap.story_date - run.started_at.date()).days + 1))
+            if latest_recap is not None
+            else 1
+        )
+        document = document.replace(
+            "Greyhaven dispatch · Day one",
+            f"Latest published dispatch · Day {dispatch_day}",
+        )
         replacements = {
             "/lighthouse/town/northlight": f"/lighthouse/runs/{run.id}/town/{northlight.id}",
             "/lighthouse/town/harbor": f"/lighthouse/runs/{run.id}/town/{harbor.id}",
@@ -1377,8 +1417,7 @@ def create_app(
         )
 
     def story_day(run: RunRecord) -> int:
-        simulation_time = run.simulation_time or run.started_at
-        return max(1, min(14, (simulation_time.date() - run.started_at.date()).days + 1))
+        return run_story_day(run)
 
     def public_location_events(
         database: Session, run_id: UUID, location_id: str, *, limit: int = 3
@@ -1703,7 +1742,7 @@ def create_app(
     ) -> str:
         return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(title)} — The Lighthouse</title><meta name="description" content="{escape(description)}"><meta property="og:type" content="article"><meta property="og:title" content="{escape(title)} — The Lighthouse"><meta property="og:description" content="{escape(description)}"><meta property="og:url" content="{escape(canonical_path)}"><meta property="og:site_name" content="The Lighthouse"><meta property="og:image" content="/static/lighthouse-social.jpg"><meta name="twitter:card" content="summary_large_image"><link rel="canonical" href="{escape(canonical_path)}"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/lighthouse.css"></head>
-<body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {story_day(run)} <span aria-hidden="true">·</span> Season archive</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town">Town</a><a href="/lighthouse/runs/{run.id}/archive" aria-current="page">Archive</a></nav></header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only public dispatches appear here; private conversations stay private.</p><p><span class="status-dot" aria-hidden="true"></span>Published in season order</p></footer></body></html>"""
+<body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>{escape(live_clock_label(run))}</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town">Town</a><a href="/lighthouse/runs/{run.id}/archive" aria-current="page">Archive</a></nav></header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only public dispatches appear here; private conversations stay private.</p><p><span class="status-dot" aria-hidden="true"></span>Published in season order</p></footer></body></html>"""
 
     @app.get(
         "/lighthouse/runs/{run_id}/archive",
