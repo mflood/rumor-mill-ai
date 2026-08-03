@@ -15,12 +15,14 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence import create_database_engine, create_session_factory
 from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
     Base,
+    ConversationModel,
     EventModel,
     JobModel,
     NarrativeReportModel,
@@ -990,7 +992,7 @@ def test_authentication_validation_and_not_found_errors(api) -> None:  # type: i
 
 def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type: ignore[no-untyped-def]
     client, factory = api
-    run_id = initialize(client)["id"]
+    run_id = UUID(str(initialize(client)["id"]))
     session_response = client.post("/api/v1/visitors/session")
     assert session_response.status_code == 201
     visitor = session_response.json()
@@ -1039,13 +1041,124 @@ def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type:
             == 0
         )
 
-    # The server-rendered flow uses the same secure session lifecycle.
+    # The server-rendered flow explains scope before exposing the destructive confirmation.
     entered = client.post("/lighthouse/session", follow_redirects=False)
     assert entered.status_code == 303
     assert entered.headers["location"] == "/lighthouse/today"
-    forgotten = client.post("/lighthouse/session/reset", follow_redirects=False)
-    assert forgotten.status_code == 303
-    assert forgotten.headers["location"] == "/lighthouse"
+    today = client.get("/lighthouse/today")
+    assert "Erase my visit data" in today.text
+    assert "Erase my visit data permanently" in today.text
+    assert "Keep my visit data" in today.text
+    assert 'type="button" data-reset-cancel' in today.text
+    assert "private conversations and their messages" in today.text
+    assert "reading progress and active story selection" in today.text
+    assert "Character relationship notes, trust, and memories" in today.text
+    assert "anonymous visitor record and this browser's identifier" in today.text
+    assert "cannot be recovered" in today.text
+    assert "shared public episodes, scenes, and town events remain unchanged" in today.text
+
+    server_visitor = client.get("/api/v1/visitors/me").json()
+    server_visitor_id = UUID(str(server_visitor["visitor_id"]))
+    assert (
+        client.post(
+            f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
+        ).status_code
+        == 201
+    )
+    with factory() as database:
+        database.add(
+            NarrativeReportModel(
+                run_id=run_id,
+                visitor_id=server_visitor_id,
+                target_kind="episode",
+                category="other",
+                note="delete this note",
+                diagnostic_refs={},
+            )
+        )
+        database.commit()
+
+    confirmed = client.post("/lighthouse/session/reset", follow_redirects=False)
+    assert confirmed.status_code == 303
+    assert confirmed.headers["location"] == "/lighthouse/visit-data-erased"
+    completion = client.get(confirmed.headers["location"])
+    assert "Your visit data is gone" in completion.text
+    assert "Start a fresh visit" in completion.text
+    assert "cannot be recovered" in completion.text
+    with factory() as database:
+        assert database.get(VisitorModel, server_visitor_id) is None
+        assert (
+            database.scalar(
+                select(func.count())
+                .select_from(ConversationModel)
+                .where(ConversationModel.visitor_id == server_visitor_id)
+            )
+            == 0
+        )
+        assert (
+            database.scalar(
+                select(func.count())
+                .select_from(VisitorCharacterStateModel)
+                .where(VisitorCharacterStateModel.visitor_id == server_visitor_id)
+            )
+            == 0
+        )
+        assert (
+            database.scalar(
+                select(func.count())
+                .select_from(NarrativeReportModel)
+                .where(NarrativeReportModel.visitor_id == server_visitor_id)
+            )
+            == 0
+        )
+
+    # A repeated submission is idempotent and returns the same fresh-start destination.
+    repeated = client.post("/lighthouse/session/reset", follow_redirects=False)
+    assert repeated.status_code == 303
+    assert repeated.headers["location"] == "/lighthouse/visit-data-erased"
+
+
+def test_lighthouse_visit_reset_rolls_back_and_can_be_retried(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    visitor_id = UUID(str(client.get("/api/v1/visitors/me").json()["visitor_id"]))
+    assert (
+        client.post(
+            f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
+        ).status_code
+        == 201
+    )
+
+    original_commit = Session.commit
+
+    def fail_deletion_commit(database: Session) -> None:
+        if any(isinstance(item, VisitorModel) for item in database.deleted):
+            raise SQLAlchemyError("simulated deletion failure")
+        original_commit(database)
+
+    with patch.object(Session, "commit", fail_deletion_commit):
+        failed = client.post("/lighthouse/session/reset")
+
+    assert failed.status_code == 503
+    assert "Your visit data is still here" in failed.text
+    assert "deletion was rolled back" in failed.text
+    assert "Try erasing again" in failed.text
+    assert client.get("/api/v1/visitors/me").status_code == 200
+    with factory() as database:
+        assert database.get(VisitorModel, visitor_id) is not None
+        assert (
+            database.scalar(
+                select(func.count())
+                .select_from(ConversationModel)
+                .where(ConversationModel.visitor_id == visitor_id)
+            )
+            == 1
+        )
+
+    retried = client.post("/lighthouse/session/reset", follow_redirects=False)
+    assert retried.status_code == 303
+    assert retried.headers["location"] == "/lighthouse/visit-data-erased"
 
 
 def test_today_redirects_visitor_without_an_active_story(api) -> None:  # type: ignore[no-untyped-def]

@@ -21,7 +21,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence import (
@@ -538,19 +538,23 @@ def create_app(
 
     def delete_visitor_data(database: Session, visitor: VisitorModel) -> None:
         """Permanently remove the pseudonymous visitor and every visitor-owned record."""
-        database.execute(
-            delete(NarrativeReportModel).where(NarrativeReportModel.visitor_id == visitor.id)
-        )
-        database.execute(
-            delete(ConversationModel).where(ConversationModel.visitor_id == visitor.id)
-        )
-        database.execute(
-            delete(VisitorCharacterStateModel).where(
-                VisitorCharacterStateModel.visitor_id == visitor.id
+        try:
+            database.execute(
+                delete(NarrativeReportModel).where(NarrativeReportModel.visitor_id == visitor.id)
             )
-        )
-        database.delete(visitor)
-        database.commit()
+            database.execute(
+                delete(ConversationModel).where(ConversationModel.visitor_id == visitor.id)
+            )
+            database.execute(
+                delete(VisitorCharacterStateModel).where(
+                    VisitorCharacterStateModel.visitor_id == visitor.id
+                )
+            )
+            database.delete(visitor)
+            database.commit()
+        except SQLAlchemyError:
+            database.rollback()
+            raise
 
     def require_visitor(
         database: Annotated[Session, Depends(session)],
@@ -983,13 +987,55 @@ def create_app(
         new_visitor(database, response, active_run_id=run.id)
         return response
 
+    def visit_reset_page(*, failed: bool = False) -> str:
+        document = (web_root / "visit_reset.html").read_text(encoding="utf-8")
+        if failed:
+            state = """<article class="reset-receipt reset-receipt--failed" aria-labelledby="reset-title">
+          <p class="eyebrow">Deletion did not finish</p>
+          <h1 id="reset-title">Your visit data is still here.</h1>
+          <p class="reset-receipt__lede">Greyhaven could not erase your private visitor ledger. The deletion was rolled back, your browser identifier remains active, and none of the listed data was partially removed.</p>
+          <div class="reset-receipt__actions">
+            <form action="/lighthouse/session/reset" method="post" data-reset-form>
+              <button class="danger-action" type="submit" data-reset-submit>Try erasing again</button>
+            </form>
+            <a class="secondary-action" href="/lighthouse/today">Return to Today</a>
+          </div>
+        </article>"""
+        else:
+            state = """<article class="reset-receipt reset-receipt--success" aria-labelledby="reset-title">
+          <p class="eyebrow">Private visitor ledger erased</p>
+          <h1 id="reset-title">Your visit data is gone.</h1>
+          <p class="reset-receipt__lede">Your conversations, reading progress, character memories, reports, active story selection, anonymous visitor record, and browser identifier were permanently deleted. They cannot be recovered.</p>
+          <p>Greyhaven's shared public story remains unchanged. You can read without restoring the erased data, or start again with a new anonymous visitor ledger.</p>
+          <form action="/lighthouse/session" method="post">
+            <button class="primary-action" type="submit">Start a fresh visit <span aria-hidden="true">→</span></button>
+          </form>
+        </article>"""
+        return document.replace("<!-- RESET_STATE -->", state)
+
+    @app.get("/lighthouse/visit-data-erased", response_class=HTMLResponse, include_in_schema=False)
+    def lighthouse_visit_data_erased() -> HTMLResponse:
+        return HTMLResponse(visit_reset_page())
+
     @app.post("/lighthouse/session/reset", include_in_schema=False)
     def reset_lighthouse_session(
         database: Annotated[Session, Depends(session)],
-        visitor: Annotated[VisitorModel, Depends(require_visitor)],
-    ) -> RedirectResponse:
-        delete_visitor_data(database, visitor)
-        response = RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
+    ) -> Response:
+        try:
+            visitor = optional_visitor(database, token)
+            if visitor is not None:
+                delete_visitor_data(database, visitor)
+        except SQLAlchemyError:
+            database.rollback()
+            logger.exception("visitor_data_deletion_failed")
+            return HTMLResponse(
+                visit_reset_page(failed=True),
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        response = RedirectResponse(
+            "/lighthouse/visit-data-erased", status_code=status.HTTP_303_SEE_OTHER
+        )
         response.delete_cookie(visitor_cookie, path="/")
         return response
 
