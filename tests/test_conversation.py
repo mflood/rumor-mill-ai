@@ -14,6 +14,8 @@ from rumor_mill.engine.conversation import (
     ConversationBelief,
     ConversationContext,
     ConversationEventKind,
+    ConversationHistoryMessage,
+    ConversationHistoryRole,
     ConversationMemory,
     ConversationSafetyError,
     ConversationStreamEvent,
@@ -129,6 +131,40 @@ def test_prompt_contains_required_scope_and_fences_untrusted_input() -> None:
         assert value in developer.content
     assert attack not in developer.content
     assert user.content.endswith(f"{attack}\n</visitor_input>")
+
+
+def test_prompt_preserves_prior_conversation_in_role_order() -> None:
+    provider = CapturingProvider({"character_conversation": response()})
+    history = (
+        ConversationHistoryMessage(
+            role=ConversationHistoryRole.VISITOR,
+            content="My brother Elias is missing.",
+        ),
+        ConversationHistoryMessage(
+            role=ConversationHistoryRole.CHARACTER,
+            content="When did you last see him?",
+        ),
+    )
+
+    tuple(
+        CharacterConversationEngine(provider).stream(context(), "9:17 yesterday", history=history)
+    )
+
+    assert provider.request is not None
+    system, developer, prior_visitor, prior_character, current_visitor = provider.request.messages
+    assert system.role.value == "system"
+    assert "prior conversation messages for continuity" in system.content
+    assert developer.role.value == "developer"
+    assert prior_visitor.role.value == "user"
+    assert "<visitor_message>\nMy brother Elias is missing.\n</visitor_message>" in (
+        prior_visitor.content
+    )
+    assert prior_character.role.value == "assistant"
+    assert "<character_message>\nWhen did you last see him?\n</character_message>" in (
+        prior_character.content
+    )
+    assert current_visitor.role.value == "user"
+    assert current_visitor.content.endswith("9:17 yesterday\n</visitor_input>")
 
 
 @pytest.mark.parametrize(
