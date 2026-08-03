@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from html import unescape
 from pathlib import Path
@@ -37,10 +38,12 @@ from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.config import Settings
 from rumor_mill.engine.conversation import CharacterConversationEngine
 from rumor_mill.engine.ports import (
+    GenerationRequest,
     ProviderError,
     ProviderRateLimitError,
     ProviderTimeoutError,
     RunStatus,
+    StreamEvent,
 )
 from rumor_mill.engine.recap import RecapSource, build_daily_recap
 from rumor_mill.main import create_app
@@ -50,6 +53,12 @@ pytestmark = pytest.mark.integration
 
 
 class MutableConversationProvider(DeterministicFakeProvider):
+    last_request: GenerationRequest | None = None
+
+    def stream(self, request: GenerationRequest) -> Iterator[StreamEvent]:
+        self.last_request = request
+        yield from super().stream(request)
+
     def set_response(self, **changes: object) -> None:
         response: dict[str, object] = {
             "reply": "I heard the archive door after midnight.",
@@ -2268,6 +2277,18 @@ def test_streaming_conversation_is_idempotent_private_and_recovers(api) -> None:
     )
     assert refused.status_code == 200
     assert refused.json()["messages"][-1]["kind"] == "refusal"
+    assert provider.last_request is not None
+    assert any(
+        item.role.value == "user"
+        and "<visitor_message>\nWho used the archive?\n</visitor_message>" in item.content
+        for item in provider.last_request.messages
+    )
+    assert any(
+        item.role.value == "assistant"
+        and "<character_message>\nI heard the archive door after midnight.\n</character_message>"
+        in item.content
+        for item in provider.last_request.messages
+    )
     provider.set_response(
         reply="The west stair was wet.",
         action=None,

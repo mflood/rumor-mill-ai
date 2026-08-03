@@ -59,6 +59,8 @@ from rumor_mill.engine.conversation import (
     ConversationBelief,
     ConversationContext,
     ConversationEventKind,
+    ConversationHistoryMessage,
+    ConversationHistoryRole,
     ConversationMemory,
     ConversationSafetyError,
     DisclosureBoundary,
@@ -3051,8 +3053,24 @@ def create_app(
             created_at=datetime.now(UTC),
         )
         try:
+            history = tuple(
+                ConversationHistoryMessage(
+                    role=(
+                        ConversationHistoryRole.VISITOR
+                        if item.role == "visitor"
+                        else ConversationHistoryRole.CHARACTER
+                    ),
+                    content=item.content,
+                )
+                for item in transcript
+                if item.kind != "system"
+            )
             generated = list(
-                conversation_engine.stream(character_context(model, state_model), request.content)
+                conversation_engine.stream(
+                    character_context(model, state_model),
+                    request.content,
+                    history=history,
+                )
             )
         except ProviderRateLimitError as exc:
             raise HTTPException(
