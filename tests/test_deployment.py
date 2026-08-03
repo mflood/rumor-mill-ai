@@ -32,11 +32,12 @@ from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.bootstrap import _bootstrap_session
 from rumor_mill.config import Settings
 from rumor_mill.deployment import smoke
-from rumor_mill.engine.lighthouse_pipeline import LighthouseStoryHandler
+from rumor_mill.engine.lighthouse_pipeline import LighthouseStoryHandler, RoutineTimeError
 from rumor_mill.engine.ports import JobRecord, JobStatus, RunRecord, RunStatus, WorldRecord
 from rumor_mill.main import create_app
 from rumor_mill.observability import MetricsRegistry
 from rumor_mill.worker import SimulationWorker, main, worker_id
+from rumor_mill.worlds import load_world
 
 ROOT = Path(__file__).parents[1]
 START = datetime(2026, 8, 2, 12, tzinfo=UTC)
@@ -236,7 +237,8 @@ def test_production_shaped_bootstrap_advances_executes_and_publishes_once(tmp_pa
     command.upgrade(config, "head")
     engine = create_database_engine(url)
     factory = create_session_factory(engine)
-    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    definition = load_world(ROOT / "docs/worlds/lighthouse/world.json").model_dump(mode="json")
+    assert definition["routines"][0]["start_time"] == "05:30:00"
     with factory.begin() as database:
         bootstrapped = _bootstrap_session(database, definition)
         run = database.get(RunModel, bootstrapped.run_id)
@@ -285,7 +287,7 @@ def test_worker_executes_authored_routine_output(tmp_path: Path) -> None:
     command.upgrade(config, "head")
     engine = create_database_engine(url)
     factory = create_session_factory(engine)
-    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    definition = load_world(ROOT / "docs/worlds/lighthouse/world.json").model_dump(mode="json")
     with factory.begin() as database:
         bootstrapped = _bootstrap_session(database, definition)
         run = database.get(RunModel, bootstrapped.run_id)
@@ -534,6 +536,42 @@ def test_worker_continues_after_run_and_poll_failures(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(worker, "poll_once", lambda: (_ for _ in ()).throw(RuntimeError("db")))
     worker.run_forever(StopAfterWait())  # type: ignore[arg-type]
+    engine.dispose()
+
+
+def test_worker_logs_safe_actionable_routine_time_failure(  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch
+) -> None:
+    url = f"sqlite:///{tmp_path / 'routine-time-failure.db'}"
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    engine = create_database_engine(url)
+    factory = create_session_factory(engine)
+    world = WorldRecord(UUID(int=11), "lighthouse", 1, {}, START)
+    run = RunRecord(UUID(int=12), world.id, RunStatus.RUNNING, 1, START)
+    seed_run(SqlAlchemyUnitOfWork(factory), world, run)
+    worker = SimulationWorker(factory, worker_id="worker.routine-failure", clock=lambda: START)
+    monkeypatch.setattr(
+        "rumor_mill.worker.SimulationScheduler.advance",
+        lambda self, run_id: (_ for _ in ()).throw(
+            RoutineTimeError("routine start_time must be a valid ISO local time")
+        ),
+    )
+    logged: dict[str, object] = {}
+    monkeypatch.setattr(
+        "rumor_mill.worker.logger.exception",
+        lambda event, *, extra: logged.update(event=event, **extra),
+    )
+
+    assert worker.poll_once() == 0
+    assert logged == {
+        "event": "simulation_run_advance_failed",
+        "run_id": str(run.id),
+        "exception_type": "RoutineTimeError",
+        "error_detail": "routine start_time must be a valid ISO local time",
+    }
     engine.dispose()
 
 

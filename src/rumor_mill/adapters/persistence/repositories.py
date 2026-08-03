@@ -351,20 +351,23 @@ class SqlAlchemySceneRepository:
     def add_generated(self, run_id: UUID, record: GeneratedSceneRecord) -> None:
         scene_sequence = self._next_sequence(SceneModel, run_id)
         event_sequence = self._next_sequence(EventModel, run_id)
-        self._session.add(
-            SceneModel(
-                id=record.scene.id,
-                run_id=run_id,
-                sequence=scene_sequence,
-                title=record.scene.title,
-                starts_at=record.scene.starts_at,
-                ends_at=record.scene.ends_at,
-                payload={
-                    "scene": record.scene.model_dump(mode="json"),
-                    "generation": record.generation,
-                },
-            )
+        scene = SceneModel(
+            id=record.scene.id,
+            run_id=run_id,
+            sequence=scene_sequence,
+            title=record.scene.title,
+            starts_at=record.scene.starts_at,
+            ends_at=record.scene.ends_at,
+            payload={
+                "scene": record.scene.model_dump(mode="json"),
+                "generation": record.generation,
+            },
         )
+        self._session.add(scene)
+        # These repositories intentionally use scalar foreign keys rather than ORM
+        # relationships. Flush dependency roots explicitly so PostgreSQL never receives
+        # child inserts before their referenced rows.
+        self._session.flush((scene,))
         self._session.add_all(
             EventModel(
                 id=event.id,
@@ -386,6 +389,7 @@ class SqlAlchemySceneRepository:
             )
             for claim in record.claims
         )
+        self._session.flush()
         self._session.add_all(
             MemoryModel(
                 id=memory.id,

@@ -19,7 +19,11 @@ from rumor_mill.adapters.persistence.models import WorkerHeartbeatModel
 from rumor_mill.adapters.providers import create_model_provider
 from rumor_mill.config import Settings, get_settings
 from rumor_mill.engine.jobs import DurableJobWorker
-from rumor_mill.engine.lighthouse_pipeline import LighthouseWorkSource, lighthouse_handlers
+from rumor_mill.engine.lighthouse_pipeline import (
+    LighthouseWorkSource,
+    RoutineTimeError,
+    lighthouse_handlers,
+)
 from rumor_mill.engine.ports import JobStatus, ModelProvider
 from rumor_mill.engine.scheduling import SimulationScheduler
 from rumor_mill.observability import MetricsRegistry, configure_json_logging, observed_job
@@ -92,8 +96,14 @@ class SimulationWorker:
         for run in runs:
             try:
                 result = scheduler.advance(run.id)
-            except Exception:
-                logger.exception("simulation_run_advance_failed", extra={"run_id": str(run.id)})
+            except Exception as exc:
+                diagnostic = {
+                    "run_id": str(run.id),
+                    "exception_type": type(exc).__name__,
+                }
+                if isinstance(exc, RoutineTimeError):
+                    diagnostic["error_detail"] = str(exc)
+                logger.exception("simulation_run_advance_failed", extra=diagnostic)
                 continue
             if result.ticks:
                 advanced += 1
