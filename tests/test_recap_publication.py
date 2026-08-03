@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import inspect, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence import (
     Base,
@@ -28,8 +29,13 @@ START = datetime(2026, 8, 2, 23, 55, tzinfo=UTC)
 
 
 def store_source(
-    factory, run_id: UUID, *, generated_at: datetime, title: str, visibility: str = "public"
-) -> UUID:  # type: ignore[no-untyped-def]
+    factory: sessionmaker[Session],
+    run_id: UUID,
+    *,
+    generated_at: datetime,
+    title: str,
+    visibility: str = "public",
+) -> UUID:
     artifact_id = uuid4()
     with factory.begin() as database:
         database.add(
@@ -282,8 +288,8 @@ def test_publication_service_validation_idempotency_and_legacy_lookup(tmp_path: 
 
 
 def test_worker_bounds_recap_discovery_across_runs_and_records_failure(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     run = RunRecord(
         UUID(int=116),
         UUID(int=5),

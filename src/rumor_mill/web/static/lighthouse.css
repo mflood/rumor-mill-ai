@@ -364,6 +364,11 @@ footer a { text-underline-offset: .25rem; }
 .episode-entry summary { min-height: 2.75rem; display: flex; align-items: center; font: 700 .68rem var(--utility); text-transform: uppercase; cursor: pointer; }
 .archive-empty { min-height: 10rem; margin-left: 8rem; padding: var(--space-3); display: grid; align-content: center; gap: .5rem; border: 1px dashed var(--fog); color: var(--fog); }
 .archive-empty strong { color: var(--paper); font: 700 2rem var(--display); text-transform: uppercase; }
+.season-selector { margin: 0 0 var(--space-4); padding: var(--space-2); display: block; border: 1px solid rgb(215 226 223 / 25%); }
+.season-selector ol { margin: .75rem 0 0; padding: 0; display: grid; gap: .5rem; list-style: none; }
+.season-selector li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; }
+.season-selector strong { color: var(--fog); font: 700 .65rem var(--utility); text-transform: uppercase; }
+.season-selector a { min-height: 2.75rem; display: inline-flex; align-items: center; color: var(--sun); }
 .episode-page { max-width: 66rem; margin: auto; }
 .episode-page > header { min-height: 55svh; padding: var(--space-4) 0; display: flex; flex-direction: column; justify-content: end; border-bottom: .5rem solid var(--signal); }
 .episode-page h1 { max-width: 58rem; margin: 0; font-size: clamp(4rem, 10vw, 8rem); }
@@ -436,7 +441,12 @@ footer a { text-underline-offset: .25rem; }
   .reset-disclosure__actions, .reset-receipt__actions { flex-direction: column-reverse; }
   .reset-disclosure__actions form, .danger-action, .secondary-action { width: 100%; }
 }
-@media (max-width: 360px) { h1 { font-size: 4rem; } .wordmark__beam { display: none; } }
+@media (max-width: 360px) {
+  h1 { font-size: 4rem; }
+  .wordmark__beam { display: none; }
+  .site-header nav { gap: 0; }
+  .site-header nav a { min-width: 0; padding: .7rem .1rem; font-size: .55rem; }
+}
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .rain { animation: none; } }
 @media (forced-colors: active) { .opening__art, .primary-action { border: 2px solid CanvasText; box-shadow: none; } .status-dot { forced-color-adjust: none; } }
 .report-signal {

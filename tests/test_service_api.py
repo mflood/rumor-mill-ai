@@ -120,6 +120,209 @@ def start_visitor_session(client: TestClient) -> dict[str, object]:
     return cast(dict[str, object], response.json())
 
 
+def primary_navigation(document: str) -> list[tuple[str, str, bool]]:
+    nav = re.search(r'<nav aria-label="Primary navigation">(.*?)</nav>', document)
+    assert nav is not None
+    return [
+        (label, href, bool(current))
+        for href, current, label in re.findall(
+            r'<a href="([^"]+)"( aria-current="page")?>([^<]+)</a>', nav.group(1)
+        )
+    ]
+
+
+def public_recap(run_id: UUID, story_date: datetime, title: str) -> ArtifactModel:
+    recap = build_daily_recap(
+        story_date.date(),
+        [
+            RecapSource(
+                id=uuid4(),
+                kind="story_card",
+                title=title,
+                body=f"A public dispatch from {title}.",
+                generated_at=story_date,
+                location_id="market",
+                character_id="ada",
+            )
+        ],
+    )
+    return ArtifactModel(
+        run_id=run_id,
+        kind="daily_recap",
+        title=recap.headline,
+        body=recap.dek,
+        generated_at=story_date,
+        source_ids=[],
+        payload=recap.artifact_payload(),
+    )
+
+
+def test_lighthouse_active_visit_uses_one_four_item_navigation_contract(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    conversation = client.post(f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"})
+    assert conversation.status_code == 201
+
+    hrefs = [
+        ("Today", "/lighthouse/today"),
+        ("Town", f"/lighthouse/runs/{run_id}/town"),
+        ("People", f"/lighthouse/runs/{run_id}/people"),
+        ("Archive", f"/lighthouse/runs/{run_id}/archive"),
+    ]
+    routes = {
+        "Today": "/lighthouse/today",
+        "Town": f"/lighthouse/runs/{run_id}/town",
+        "Town location": f"/lighthouse/runs/{run_id}/town/market",
+        "People": f"/lighthouse/runs/{run_id}/people",
+        "Profile": f"/lighthouse/runs/{run_id}/people/ada",
+        "Contact chooser": f"/lighthouse/runs/{run_id}/talk",
+        "Conversation": f"/lighthouse/conversations/{conversation.json()['id']}",
+        "Archive": f"/lighthouse/runs/{run_id}/archive",
+    }
+    sections = {
+        "Today": "Today",
+        "Town": "Town",
+        "Town location": "Town",
+        "People": "People",
+        "Profile": "People",
+        "Contact chooser": "People",
+        "Conversation": "People",
+        "Archive": "Archive",
+    }
+    for name, route in routes.items():
+        response = client.get(route)
+        assert response.status_code == 200, name
+        navigation = primary_navigation(response.text)
+        assert [(label, href) for label, href, _ in navigation] == hrefs, name
+        assert [label for label, _, current in navigation if current] == [sections[name]], name
+
+    other_run_id = UUID(str(initialize(client)["id"]))
+    assert client.get(f"/lighthouse/runs/{other_run_id}/people").status_code == 404
+    with factory() as database:
+        other_run = database.get(RunModel, other_run_id)
+        assert other_run is not None
+        other_run.status = "failed"
+        database.commit()
+    assert client.get(f"/lighthouse/runs/{other_run_id}/people").status_code == 404
+    with TestClient(client.app) as unscoped_visitor:
+        start_visitor_session(unscoped_visitor)
+        assert unscoped_visitor.get(f"/lighthouse/runs/{other_run_id}/people").status_code == 404
+
+
+def test_lighthouse_historical_archive_and_people_are_safe_and_read_only(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    conversation = client.post(f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"})
+    assert conversation.status_code == 201
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        database.add(public_recap(run_id, run.started_at, "The first season closes"))
+        state = database.scalar(
+            select(VisitorCharacterStateModel).where(
+                VisitorCharacterStateModel.run_id == run_id,
+                VisitorCharacterStateModel.character_id == "ada",
+            )
+        )
+        assert state is not None
+        state.relationship_summary = "Ada remembers your question about the lamp."
+        run.status = RunStatus.COMPLETED
+        run.ended_at = run.simulation_time
+        database.commit()
+
+    landing = client.get("/lighthouse")
+    assert "No season is progressing" in landing.text
+    assert "previous seasons remain available" in landing.text
+    assert 'href="/lighthouse/archive">Archive</a>' in landing.text
+    archive = client.get("/lighthouse/archive", follow_redirects=False)
+    assert archive.status_code == 307
+    assert archive.headers["location"] == f"/lighthouse/runs/{run_id}/archive"
+    assert "The first season closes" in client.get(archive.headers["location"]).text
+
+    ledger = client.get(f"/lighthouse/runs/{run_id}/people")
+    profile = client.get(f"/lighthouse/runs/{run_id}/people/ada")
+    chooser = client.get(f"/lighthouse/runs/{run_id}/talk")
+    conversation_page = client.get(f"/lighthouse/conversations/{conversation.json()['id']}")
+    assert ledger.status_code == 200
+    assert "Ada remembers your question about the lamp" in profile.text
+    assert "Season contact closed" in profile.text
+    assert "Season contact closed" in chooser.text
+    assert "This season is read-only" in conversation_page.text
+    assert 'id="composer"' not in conversation_page.text
+    rejected = client.post(
+        f"/api/v1/conversations/{conversation.json()['id']}/messages",
+        json={"content": "Can you still hear me?", "client_message_id": str(uuid4())},
+    )
+    assert rejected.status_code == 409
+    rejected_stream = client.post(
+        f"/api/v1/conversations/{conversation.json()['id']}/messages/stream",
+        json={"content": "Can you still hear me?", "client_message_id": str(uuid4())},
+    )
+    assert rejected_stream.status_code == 409
+    rejected_new = client.post(f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"})
+    assert rejected_new.status_code == 409
+
+    with TestClient(client.app) as other_visitor:
+        start_visitor_session(other_visitor)
+        other_profile = other_visitor.get(f"/lighthouse/runs/{run_id}/people/ada")
+        assert other_profile.status_code == 200
+        assert "Ada remembers your question about the lamp" not in other_profile.text
+        assert "People" not in other_visitor.get("/lighthouse").text
+
+
+def test_lighthouse_archive_handles_no_history_multiple_seasons_and_bad_ids(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    empty = client.get("/lighthouse/archive")
+    assert empty.status_code == 200
+    assert "No published story yet" in empty.text
+    with factory() as database:
+        assert database.scalar(select(func.count()).select_from(VisitorModel)) == 0
+
+    first_id = UUID(str(initialize(client)["id"]))
+    second_id = UUID(str(initialize(client)["id"]))
+    with factory() as database:
+        first = database.get(RunModel, first_id)
+        second = database.get(RunModel, second_id)
+        assert first is not None and second is not None
+        first.status = RunStatus.COMPLETED
+        second.status = RunStatus.PAUSED
+        second.started_at = first.started_at + timedelta(days=30)
+        database.add(public_recap(first_id, first.started_at, "An earlier season"))
+        database.add(public_recap(second_id, second.started_at, "The latest season"))
+        database.commit()
+
+    selected = client.get("/lighthouse/archive", follow_redirects=False)
+    assert selected.status_code == 307
+    assert selected.headers["location"] == f"/lighthouse/runs/{second_id}/archive"
+    archive = client.get(selected.headers["location"])
+    assert "Choose a season" in archive.text
+    assert "An earlier season" not in archive.text
+    assert archive.text.count("Season beginning") == 2
+    assert client.get("/lighthouse/runs/not-a-season/archive").status_code == 404
+    assert (
+        client.get(f"/lighthouse/runs/{second_id}/archive?through=not-an-episode").status_code
+        == 422
+    )
+    assert (
+        client.post(
+            "/api/v1/runs/not-a-season/ticks",
+            headers={"Authorization": "Bearer operator-secret"},
+            json={"ticks": 1},
+        ).status_code
+        == 422
+    )
+
+    third_id = UUID(str(initialize(client)["id"]))
+    with factory() as database:
+        third = database.get(RunModel, third_id)
+        assert third is not None
+        third.status = RunStatus.COMPLETED
+        database.commit()
+    assert client.get(f"/lighthouse/runs/{third_id}/archive").status_code == 404
+
+
 def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-def]
     client, factory = api
     assert client.get("/api/v1/health").json() == {"status": "ok", "environment": "test"}

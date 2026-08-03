@@ -91,8 +91,8 @@ def test_archive_uses_the_consistent_unavailable_state_without_a_selected_story(
         response = client.get("/lighthouse/archive")
 
     assert response.status_code == 200
-    assert "Between seasons" in response.text
-    assert response.history[0].status_code == 303
+    assert "No published story yet" in response.text
+    assert response.history == []
 
 
 def test_lighthouse_visual_system_includes_accessibility_states() -> None:
