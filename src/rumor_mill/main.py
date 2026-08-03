@@ -636,6 +636,100 @@ def create_app(
         simulation_time = run.simulation_time or run.started_at
         return f"Day {run_story_day(run)} · {simulation_time.strftime('%H:%M')}"
 
+    def dispatch_status_markup(database: Session, run: RunRecord, world: WorldDefinition) -> str:
+        """Describe the next authoritative public story-work boundary.
+
+        A town dispatch is the earliest eligible authored story beat or public
+        routine window that has not completed. Existing durable Lighthouse jobs
+        take precedence over their authored source so queued and overdue work is
+        reported from persisted scheduler state.
+        """
+        simulation_time = _aware(run.simulation_time or run.started_at)
+        if run.status is RunStatus.COMPLETED:
+            return '<p data-dispatch-status data-state="completed"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>This season has ended; no more town dispatches are scheduled.</p>'
+        if run.status is RunStatus.PAUSED or run.clock_mode is ClockMode.PAUSED:
+            return '<p data-dispatch-status data-state="paused"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>The town clock is paused; dispatch timing will resume with the season.</p>'
+        if run.clock_mode is ClockMode.MANUAL:
+            return '<p data-dispatch-status data-state="manual"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>The town clock is manual; the next dispatch advances only when the operator moves time.</p>'
+
+        jobs = list(
+            database.scalars(
+                select(JobModel).where(
+                    JobModel.run_id == run.id,
+                    JobModel.kind == LIGHTHOUSE_STORY_JOB,
+                )
+            )
+        )
+        completed_keys = {job.idempotency_key for job in jobs if job.status == "completed"}
+        incomplete_jobs = [job for job in jobs if job.status != "completed"]
+        overdue_jobs = [
+            job for job in incomplete_jobs if _aware(job.scheduled_at) <= simulation_time
+        ]
+        if any(job.status == "dead" for job in overdue_jobs):
+            return '<p data-dispatch-status data-state="failed"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>A scheduled town dispatch could not be published.</p>'
+        if overdue_jobs:
+            return '<p data-dispatch-status data-state="overdue"><span class="status-dot" aria-hidden="true"></span>The next town dispatch is being prepared.</p>'
+
+        candidates = [_aware(job.scheduled_at) for job in incomplete_jobs]
+        completed_beats = {
+            key.rsplit(":", 1)[-1]
+            for key in completed_keys
+            if key.startswith(f"run:{run.id}:beat:")
+        }
+        queued_keys = {job.idempotency_key for job in incomplete_jobs}
+        for beat in world.beat_graph.beats:
+            key = f"run:{run.id}:beat:{beat.id}"
+            if key in completed_keys or key in queued_keys:
+                continue
+            if not set(beat.depends_on) <= completed_beats:
+                continue
+            earliest = _aware(run.started_at) + timedelta(days=beat.earliest_day - 1, minutes=5)
+            latest = _aware(run.started_at) + timedelta(days=beat.latest_day)
+            if earliest <= simulation_time <= latest:
+                return '<p data-dispatch-status data-state="overdue"><span class="status-dot" aria-hidden="true"></span>The next town dispatch is waiting for the next simulation tick.</p>'
+            if earliest > simulation_time and earliest <= latest:
+                candidates.append(earliest)
+
+        for routine in world.routines:
+            if routine.visibility is not Visibility.PUBLIC:
+                continue
+            offset = timedelta(
+                hours=routine.start_time.hour,
+                minutes=routine.start_time.minute,
+                seconds=routine.start_time.second,
+                microseconds=routine.start_time.microsecond,
+            )
+            for day in routine.days:
+                key = f"run:{run.id}:routine:{routine.id}:day:{day}"
+                target = _aware(run.started_at) + timedelta(days=day - 1) + offset
+                if (
+                    key not in completed_keys
+                    and key not in queued_keys
+                    and target > simulation_time
+                ):
+                    candidates.append(target)
+
+        if not candidates:
+            season_end = _aware(run.started_at) + timedelta(days=14)
+            message = (
+                "No more town dispatches are scheduled this season."
+                if simulation_time >= season_end
+                else "No future town dispatch is currently scheduled."
+            )
+            return f'<p data-dispatch-status data-state="unavailable"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>{message}</p>'
+
+        target = min(candidates)
+        remaining_minutes = max(1, int((target - simulation_time).total_seconds() + 59) // 60)
+        unit = "minute" if remaining_minutes == 1 else "minutes"
+        return (
+            '<p data-dispatch-status data-state="scheduled" '
+            f'data-simulation-time="{escape(simulation_time.isoformat())}" '
+            f'data-target-time="{escape(target.isoformat())}" '
+            f'data-clock-rate="{float(run.clock_rate):g}">'
+            '<span class="status-dot" aria-hidden="true"></span>'
+            f"<span data-dispatch-copy>Next town dispatch in {remaining_minutes} {unit}</span></p>"
+        )
+
     def latest_published_recap_artifact(database: Session, run_id: UUID) -> ArtifactModel | None:
         artifacts = list(
             database.scalars(
@@ -956,7 +1050,11 @@ def create_app(
             if visitor.active_run_id is not None
             else None
         )
-        if run_model is None or run_model.status != RunStatus.RUNNING:
+        if run_model is None or run_model.status not in {
+            RunStatus.RUNNING,
+            RunStatus.PAUSED,
+            RunStatus.COMPLETED,
+        }:
             return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         run, world = load_run(run_model.id)
         document = (web_root / "today.html").read_text(encoding="utf-8")
@@ -989,6 +1087,9 @@ def create_app(
         document = document.replace(
             "<!-- CURRENT_STORY_STATE -->",
             current_story_state(database, run, visitor, recap_artifact),
+        )
+        document = document.replace(
+            "<!-- DISPATCH_STATUS -->", dispatch_status_markup(database, run, world)
         )
         visitor.last_seen_at = datetime.now(UTC)
         database.commit()
