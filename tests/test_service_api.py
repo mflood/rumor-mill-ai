@@ -414,6 +414,24 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     cast_items = cast(list[dict[str, object]], definition["cast"])
     cast_items[0]["public_voice"] = "Short observations followed by a careful question."
     cast_items.append({"id": "cy", "name": "Cy", "description": "A stranger off the ferry."})
+    cast_items.append(
+        {
+            "id": "dee",
+            "name": "Dee",
+            "description": "A watchkeeper answering between rounds.",
+            "home_location_id": "archive",
+            "private_contact_mode": "delayed",
+        }
+    )
+    cast_items.append(
+        {
+            "id": "eve",
+            "name": "Eve",
+            "description": "A correspondent who checks messages when able.",
+            "home_location_id": "market",
+            "private_contact_mode": "asynchronous",
+        }
+    )
     relationships = cast(list[dict[str, object]], definition["initial_relationships"])
     relationships[0]["visibility"] = "public"
     relationships.append(
@@ -522,6 +540,8 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     assert profile.status_code == 200
     assert "Short observations followed by a careful question" in profile.text
     assert "At Lantern Market · Making the morning rounds" in profile.text
+    assert "Available for a live private exchange" in profile.text
+    assert "Message Ada privately" in profile.text
     assert "Ada now recognizes your careful questions" in profile.text
     assert "You asked Ada about the west stalls" in profile.text
     assert ">Bea</a>" in profile.text
@@ -531,10 +551,24 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     unknown = client.get(f"/lighthouse/runs/{run_id}/people/bea")
     assert "public dispatch, but have not spoken privately" in unknown.text
     assert "No private encounters yet" in unknown.text
+    assert "Away from public locations" in unknown.text
+    assert "Bea isn&#x27;t at a public location, but you can message them privately" in unknown.text
+    assert "Message Bea privately" in unknown.text
     unencountered = client.get(f"/lighthouse/runs/{run_id}/people/cy")
     assert "You have not encountered this person yet" in unencountered.text
     assert "Whereabouts unknown" in unencountered.text
-    assert "private line cannot be opened" in unencountered.text
+    assert "Cy cannot be reached right now" in unencountered.text
+    assert "Private line unavailable" in unencountered.text
+    delayed = client.get(f"/lighthouse/runs/{run_id}/people/dee")
+    assert "reply may be delayed" in delayed.text
+    started = client.post(f"/lighthouse/runs/{run_id}/talk/dee", follow_redirects=False)
+    delayed_line = client.get(started.headers["location"])
+    assert "accepts messages now, but replies may be delayed" in delayed_line.text
+    asynchronous = client.get(f"/lighthouse/runs/{run_id}/people/eve")
+    assert "asynchronous reply" in asynchronous.text
+    started = client.post(f"/lighthouse/runs/{run_id}/talk/eve", follow_redirects=False)
+    asynchronous_line = client.get(started.headers["location"])
+    assert "This exchange is asynchronous" in asynchronous_line.text
     assert client.get(f"/lighthouse/runs/{run_id}/people/nobody").status_code == 404
 
 
@@ -1253,11 +1287,12 @@ def test_character_picker_and_conversation_page_are_server_rendered(api) -> None
     picker = client.get(f"/lighthouse/runs/{run_id}/talk")
     assert picker.status_code == 200
     assert "Who will" in picker.text
-    assert "Ask for a private word" in picker.text
+    assert "Message Ada privately" in picker.text
     started = client.post(f"/lighthouse/runs/{run_id}/talk/ada", follow_redirects=False)
     assert started.status_code == 303
     page = client.get(started.headers["location"])
     assert "A private word with" in page.text
+    assert "This is a live private exchange" in page.text
     assert "signal-wire" in page.text
     script = client.get("/static/conversation.js")
     assert "ReadableStream" not in script.text  # uses the widely supported reader API directly
@@ -1283,7 +1318,9 @@ def test_unavailable_character_cannot_start_a_conversation(api) -> None:  # type
     start_visitor_session(client)
     characters = client.get(f"/api/v1/runs/{run_id}/characters").json()["items"]
     assert characters[0]["available"] is False
-    assert "Away" in characters[0]["availability"]
+    assert characters[0]["private_contact_mode"] == "unavailable"
+    assert characters[0]["public_whereabouts"] == "Whereabouts unknown"
+    assert "presently unavailable" in characters[0]["private_contact_status"]
     assert (
         client.post(
             f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
