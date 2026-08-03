@@ -195,7 +195,7 @@ footer a { text-underline-offset: .25rem; }
 .recap-panel a { width: max-content; min-height: 2.75rem; padding: .7rem 0; color: var(--sun); font: 700 .7rem var(--utility); text-transform: uppercase; text-decoration-thickness: .12rem; text-underline-offset: .35rem; }
 .recap-panel--quote a { color: #7a211d; }
 .threads { position: sticky; top: 1rem; padding: var(--space-3); background: var(--fog); color: var(--ink); }
-.threads h2, .story-states h2 { margin: 0 0 var(--space-3); font: 700 clamp(2.4rem, 4vw, 4rem)/.9 var(--display); text-transform: uppercase; }
+.threads h2, .story-state h2 { margin: 0 0 var(--space-3); font: 700 clamp(2.4rem, 4vw, 4rem)/.9 var(--display); text-transform: uppercase; }
 .threads .eyebrow { color: #9d2c25; }
 .threads ol { margin: 0; padding: 0; list-style: none; border-top: 1px solid rgb(7 26 38 / 25%); }
 .threads li { border-bottom: 1px solid rgb(7 26 38 / 25%); }
@@ -204,11 +204,12 @@ footer a { text-underline-offset: .25rem; }
 .threads li a:hover { color: #9d2c25; }
 .next-stop { margin: var(--space-3) calc(var(--space-3) * -1) calc(var(--space-3) * -1); padding: var(--space-3); background: var(--sun); }
 .next-stop .primary-action { width: 100%; margin-top: 1rem; color: var(--ink); }
-.story-states { margin-top: var(--space-4); padding: var(--space-4) 0; display: grid; grid-template-columns: .8fr 1.2fr; gap: var(--space-4); border-top: 1px solid rgb(215 226 223 / 25%); }
-.state-notes { border-top: 1px solid rgb(215 226 223 / 25%); }
-.state-notes p { margin: 0; padding: var(--space-2) 0; display: grid; grid-template-columns: .7fr 1.3fr; gap: var(--space-2); border-bottom: 1px solid rgb(215 226 223 / 25%); }
-.state-notes strong { font-family: var(--display); font-size: 1.25rem; text-transform: uppercase; }
-.state-notes span { color: var(--fog); }
+.story-state { margin-top: var(--space-4); padding: var(--space-4) 0; display: grid; grid-template-columns: .8fr 1.2fr; gap: var(--space-4); border-top: 1px solid rgb(215 226 223 / 25%); }
+.story-state__current { padding: var(--space-3); border: 1px solid rgb(215 226 223 / 35%); background: rgb(7 26 38 / 55%); }
+.story-state__current p { color: var(--fog); }
+.story-state__current .primary-action { margin-top: var(--space-2); }
+.story-state details { margin-top: var(--space-3); color: var(--fog); }
+.story-state summary { color: var(--paper); cursor: pointer; font-family: var(--utility); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 
 /* Private conversations: a harbor radio circuit, not a generic chat stack. */
 .contact-sheet, .radio-room { max-width: var(--reading); margin: auto; padding: var(--space-4) var(--space-2); }
@@ -368,10 +369,9 @@ footer a { text-underline-offset: .25rem; }
   .today-lead { min-height: auto; grid-template-columns: 1fr; gap: var(--space-2); }
   .today-lead__chapter { min-height: 5rem; flex-direction: row; align-items: start; border-right: 0; border-bottom: .4rem solid var(--signal); }
   .issue-number { font-size: 5.5rem; }
-  .today-grid, .story-states { grid-template-columns: 1fr; }
+  .today-grid, .story-state { grid-template-columns: 1fr; }
   .threads { position: static; }
   .recap-panel { min-height: 26rem; padding: var(--space-3) var(--space-2); }
-  .state-notes p { grid-template-columns: 1fr; }
   .signal-wire { padding-left: 1.8rem; }
   .signal-message--visitor { margin-left: 0; }
   .dispatch-console > div { grid-template-columns: 1fr; }
