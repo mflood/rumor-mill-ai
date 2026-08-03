@@ -153,6 +153,7 @@ failure scenarios.
 
 ## More documentation
 
+- [The Lighthouse MVP experience and navigation contract](docs/worlds/lighthouse/mvp-experience.md)
 - [The Lighthouse story bible](docs/worlds/lighthouse/story-bible.md)
 - [World-authoring format](docs/world-authoring-format.md)
 - [Narrative evaluations](docs/narrative-evaluations.md)
