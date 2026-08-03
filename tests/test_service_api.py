@@ -31,6 +31,7 @@ from rumor_mill.adapters.persistence.models import (
     VisitorCharacterStateModel,
     VisitorModel,
     WorkerHeartbeatModel,
+    WorldModel,
 )
 from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.config import Settings
@@ -1446,6 +1447,215 @@ def test_today_presents_one_accessible_current_story_state(api) -> None:  # type
     assert "Your progress and private conversations are safe" in failed.text
     assert "No new public scenes" not in failed.text
     assert "Since your last visit" not in failed.text
+
+
+def test_today_dispatch_countdown_uses_live_schedule_and_progresses_in_browser(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.clock_mode = "wall"
+        run.simulation_time = run.started_at
+        database.commit()
+
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    today = client.get("/lighthouse/today")
+
+    assert 'data-dispatch-status data-state="scheduled"' in today.text
+    assert "Next town dispatch in 5 minutes" in today.text
+    assert "47 minutes" not in today.text
+    assert 'data-simulation-time="' in today.text
+    assert 'data-target-time="' in today.text
+    assert 'data-clock-rate="1"' in today.text
+
+    script = client.get("/static/dispatch-countdown.js")
+    assert script.status_code == 200
+    assert "performance.now() - loadedAt" in script.text
+    assert "window.setInterval(update, 1_000)" in script.text
+    assert "remainingSeconds <= 0" in script.text
+    assert "reload for the latest state" in script.text
+
+
+def test_today_dispatch_status_handles_manual_paused_overdue_and_season_end(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+
+    manual = client.get("/lighthouse/today")
+    assert 'data-state="manual"' in manual.text
+    assert "the next dispatch advances only when the operator moves time" in manual.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.status = "paused"
+        run.clock_mode = "paused"
+        database.commit()
+    paused = client.get("/lighthouse/today", follow_redirects=False)
+    assert paused.status_code == 200
+    assert 'data-state="paused"' in paused.text
+    assert "dispatch timing will resume with the season" in paused.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.status = "running"
+        run.clock_mode = "wall"
+        run.simulation_time = run.started_at + timedelta(minutes=5)
+        database.commit()
+    overdue = client.get("/lighthouse/today")
+    assert 'data-state="overdue"' in overdue.text
+    assert "waiting for the next simulation tick" in overdue.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.simulation_time = run.started_at + timedelta(days=14, minutes=1)
+        database.commit()
+    ended_schedule = client.get("/lighthouse/today")
+    assert 'data-state="unavailable"' in ended_schedule.text
+    assert "No more town dispatches are scheduled this season" in ended_schedule.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.status = "completed"
+        run.ended_at = run.simulation_time
+        database.commit()
+    completed = client.get("/lighthouse/today", follow_redirects=False)
+    assert completed.status_code == 200
+    assert 'data-state="completed"' in completed.text
+    assert "This season has ended" in completed.text
+
+
+def test_today_dispatch_status_reconciles_jobs_and_public_authored_work(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.clock_mode = "wall"
+        database.add(
+            JobModel(
+                run_id=run_id,
+                idempotency_key=f"run:{run_id}:beat:hidden-key",
+                kind="lighthouse_story",
+                status="pending",
+                scheduled_at=run.simulation_time,
+                available_at=run.simulation_time,
+                payload={"story_kind": "beat", "id": "hidden-key"},
+            )
+        )
+        database.commit()
+    preparing = client.get("/lighthouse/today")
+    assert "The next town dispatch is being prepared" in preparing.text
+
+    with factory() as database:
+        job = database.scalar(
+            select(JobModel).where(JobModel.idempotency_key.endswith(":beat:hidden-key"))
+        )
+        assert job is not None
+        job.status = "dead"
+        database.commit()
+    failed = client.get("/lighthouse/today")
+    assert 'data-state="failed"' in failed.text
+    assert "could not be published" in failed.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        job = database.scalar(
+            select(JobModel).where(JobModel.idempotency_key.endswith(":beat:hidden-key"))
+        )
+        assert run is not None and job is not None
+        job.status = "completed"
+        world = database.get(WorldModel, run.world_id)
+        assert world is not None
+        definition = dict(world.definition)
+        definition["routines"] = [
+            {
+                "id": "private-window",
+                "character_id": "ada",
+                "location_id": "market",
+                "days": [1],
+                "start_time": "12:00",
+                "end_time": "13:00",
+                "activity": "Sorting private letters.",
+                "visibility": "participants",
+            },
+            {
+                "id": "filed-window",
+                "character_id": "bea",
+                "location_id": "archive",
+                "days": [1],
+                "start_time": "11:00",
+                "end_time": "12:00",
+                "activity": "Opening the public desk.",
+            },
+            {
+                "id": "future-window",
+                "character_id": "ada",
+                "location_id": "market",
+                "days": [1],
+                "start_time": "10:00",
+                "end_time": "11:00",
+                "activity": "Taking public courier requests.",
+            },
+        ]
+        world.definition = definition
+        database.add(
+            JobModel(
+                run_id=run_id,
+                idempotency_key=f"run:{run_id}:routine:filed-window:day:1",
+                kind="lighthouse_story",
+                status="completed",
+                scheduled_at=run.started_at + timedelta(hours=11),
+                available_at=run.started_at + timedelta(hours=11),
+                payload={"story_kind": "routine", "id": "filed-window"},
+            )
+        )
+        database.commit()
+
+    eligible_dependency = client.get("/lighthouse/today")
+    assert "Next town dispatch in 5 minutes" in eligible_dependency.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        database.add(
+            JobModel(
+                run_id=run_id,
+                idempotency_key=f"run:{run_id}:beat:quiet-question",
+                kind="lighthouse_story",
+                status="completed",
+                scheduled_at=run.started_at + timedelta(minutes=5),
+                available_at=run.started_at + timedelta(minutes=5),
+                payload={"story_kind": "beat", "id": "quiet-question"},
+            )
+        )
+        database.commit()
+    public_window = client.get("/lighthouse/today")
+    assert "Next town dispatch in 600 minutes" in public_window.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        database.add(
+            JobModel(
+                run_id=run_id,
+                idempotency_key=f"run:{run_id}:routine:future-window:day:1",
+                kind="lighthouse_story",
+                status="completed",
+                scheduled_at=run.started_at + timedelta(hours=10),
+                available_at=run.started_at + timedelta(hours=10),
+                payload={"story_kind": "routine", "id": "future-window"},
+            )
+        )
+        database.commit()
+    no_future = client.get("/lighthouse/today")
+    assert "No future town dispatch is currently scheduled" in no_future.text
 
 
 def test_lighthouse_recommendations_validate_live_state_and_recover_when_stale(  # type: ignore[no-untyped-def]
