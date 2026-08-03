@@ -1,7 +1,7 @@
 """End-to-end coverage for a returning player's complete story lifecycle."""
 
 import json
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from rumor_mill.adapters.persistence import create_database_engine, create_session_factory
-from rumor_mill.adapters.persistence.models import ArtifactModel
+from rumor_mill.adapters.persistence.models import ArtifactModel, RunModel
 from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.config import Settings
 from rumor_mill.engine.conversation import CharacterConversationEngine
@@ -150,6 +150,25 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
             episode_id = published.json()["id"]
             assert published.json()["recap"]["headline"] == "The bell after midnight"
 
+            with factory() as database:
+                run_model = database.get(RunModel, run_id)
+                assert run_model is not None
+                run_model.simulation_time = datetime.combine(
+                    run_model.started_at.date() + timedelta(days=1), time(hour=0, minute=3)
+                )
+                database.add(
+                    ArtifactModel(
+                        run_id=run_id,
+                        kind="daily_recap",
+                        title="Unpublished Day 2 draft",
+                        body="This draft must not replace the latest public dispatch.",
+                        generated_at=run_model.simulation_time,
+                        source_ids=[],
+                        payload={"visibility": "private", "recap": published.json()["recap"]},
+                    )
+                )
+                database.commit()
+
         with TestClient(app, cookies={"rm_visitor": visitor_cookie}) as return_visit:
             identity = return_visit.get("/api/v1/visitors/me")
             assert identity.status_code == 200
@@ -171,5 +190,23 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
             canonical_archive = return_visit.get("/lighthouse/archive")
             assert canonical_archive.status_code == 200
             assert "The bell after midnight" in canonical_archive.text
+
+            public_routes = (
+                "/lighthouse",
+                "/lighthouse/today",
+                f"/lighthouse/runs/{run_id}/town",
+                f"/lighthouse/runs/{run_id}/town/market",
+                f"/lighthouse/runs/{run_id}/people",
+                f"/lighthouse/runs/{run_id}/people/ada",
+                f"/lighthouse/runs/{run_id}/archive",
+            )
+            for route in public_routes:
+                page = return_visit.get(route)
+                assert page.status_code == 200
+                assert "Day 2" in page.text
+                assert "00:03" in page.text
+
+            today = return_visit.get("/lighthouse/today")
+            assert "Latest published dispatch · Day 1" in today.text
     finally:
         engine.dispose()
