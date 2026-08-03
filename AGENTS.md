@@ -6,6 +6,13 @@ Use the authenticated `gh` CLI for all GitHub API interactions, including pull r
 issues, reviews, checks, releases, and repository metadata. Do not use a GitHub connector or
 app. Continue to use local `git` commands for branch, commit, and push operations.
 
+## Python tooling
+
+Always use the repository's configured `.venv` environment for local Python linting,
+formatting, type checking, and tests. Invoke tools directly from `.venv/bin` (for example,
+`.venv/bin/ruff`, `.venv/bin/mypy`, and `.venv/bin/pytest`) instead of relying on `uv` or bare
+tool names being available on the shell's `PATH`.
+
 ## Linear issue workflow
 
 Whenever starting implementation of a new Linear issue:
