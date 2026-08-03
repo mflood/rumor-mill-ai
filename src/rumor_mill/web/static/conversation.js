@@ -5,8 +5,18 @@
   const list = document.querySelector("#messages");
   const form = document.querySelector("#composer");
   const input = document.querySelector("#message");
+  const submit = form.querySelector('button[type="submit"]');
   const status = document.querySelector("#line-status");
   const count = document.querySelector("#count");
+  let isSubmitting = false;
+  let pendingSubmission = null;
+
+  const setSubmitting = (submitting) => {
+    isSubmitting = submitting;
+    input.disabled = submitting;
+    submit.disabled = submitting;
+    form.setAttribute("aria-busy", String(submitting));
+  };
 
   const render = (message) => {
     const item = document.createElement("li");
@@ -39,9 +49,12 @@
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const content = input.value.trim();
-    if (!content) return;
-    const clientMessageId = crypto.randomUUID();
-    input.disabled = true;
+    if (!content || isSubmitting) return;
+    if (!pendingSubmission || pendingSubmission.content !== content) {
+      pendingSubmission = { content, clientMessageId: crypto.randomUUID() };
+    }
+    const { clientMessageId } = pendingSubmission;
+    setSubmitting(true);
     status.textContent = "The signal is carrying your words…";
     try {
       const response = await fetch(`/api/v1/conversations/${id}/messages/stream`, {
@@ -77,11 +90,12 @@
         });
       }
       input.value = ""; count.textContent = "0 / 4000";
+      pendingSubmission = null;
       status.textContent = "Reply received.";
       await load();
     } catch (_) {
       status.textContent = "The line went quiet. Your message was not committed; try again.";
-    } finally { input.disabled = false; input.focus(); }
+    } finally { setSubmitting(false); input.focus(); }
   });
   load();
 })();
