@@ -86,6 +86,9 @@ stored canonically as ISO local times such as `HH:MM:SS`. The scheduler accepts 
 as ISO seconds and fractional seconds, and rejects timezone-bearing or malformed values with a
 payload-free diagnostic. The production-shaped deployment test must keep exercising this typed
 load, JSON serialization, persistence, and scheduling boundary.
+Generated scenes are flushed before their dependent artifacts, and events and claims are flushed
+before dependent memories, so production PostgreSQL foreign keys remain satisfied during job
+completion.
 
 ## Metrics monitoring
 
