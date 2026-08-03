@@ -539,7 +539,9 @@ def test_worker_continues_after_run_and_poll_failures(tmp_path: Path, monkeypatc
     engine.dispose()
 
 
-def test_worker_logs_safe_actionable_routine_time_failure(tmp_path: Path, monkeypatch) -> None:
+def test_worker_logs_safe_actionable_routine_time_failure(  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch
+) -> None:
     url = f"sqlite:///{tmp_path / 'routine-time-failure.db'}"
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
