@@ -165,6 +165,32 @@ h1 em { color: var(--signal); font-weight: 700; }
 .dispatch > p { max-width: 30rem; margin: auto 0 0; padding-top: var(--space-2); border-top: .35rem solid var(--signal); font-size: 1.05rem; }
 footer { max-width: var(--reading); margin: auto; padding: var(--space-3) var(--space-2); display: flex; justify-content: space-between; gap: 1rem; color: var(--fog); font: .65rem var(--utility); text-transform: uppercase; }
 footer a { text-underline-offset: .25rem; }
+.reset-disclosure { position: relative; width: min(28rem, 100%); text-transform: none; }
+.reset-disclosure > summary { min-height: 2.75rem; width: max-content; margin: -.35rem auto 0; padding: .7rem 0; color: var(--fog); text-decoration: underline; text-underline-offset: .3rem; text-transform: uppercase; cursor: pointer; }
+.reset-disclosure > summary:hover { color: var(--sun); }
+.reset-disclosure__sheet { position: absolute; z-index: 10; right: 50%; bottom: calc(100% + 1rem); width: min(36rem, calc(100vw - 2rem)); padding: var(--space-2); background: var(--paper); color: var(--ink); border-top: .55rem solid var(--signal); box-shadow: .65rem .65rem 0 var(--storm); translate: 50% 0; font: .88rem/1.55 var(--body); text-transform: none; }
+.reset-disclosure__sheet::after { content: ""; position: absolute; right: calc(50% - .7rem); bottom: -.7rem; width: 1.4rem; height: 1.4rem; background: var(--paper); rotate: 45deg; }
+.reset-disclosure__sheet .eyebrow { color: #9d2c25; }
+.reset-disclosure__sheet h2 { margin: 0 0 var(--space-2); font-size: clamp(2rem, 6vw, 3.5rem); }
+.reset-disclosure__sheet ul { margin: 0 0 var(--space-2); padding-left: 1.3rem; }
+.reset-disclosure__sheet li { margin-bottom: .45rem; }
+.reset-disclosure__actions, .reset-receipt__actions { display: flex; align-items: stretch; gap: .75rem; margin-top: var(--space-2); }
+.reset-disclosure__actions form, .reset-receipt__actions form { margin: 0; }
+.danger-action, .secondary-action { min-height: 3rem; padding: .8rem 1rem; display: inline-flex; align-items: center; justify-content: center; border: 2px solid var(--ink); font: 700 .68rem var(--utility); text-align: center; text-decoration: none; text-transform: uppercase; cursor: pointer; }
+.danger-action { background: #b9362e; color: #fff; border-color: #b9362e; }
+.danger-action:hover { background: #8f211c; border-color: #8f211c; }
+.danger-action:disabled { background: #796b67; border-color: #796b67; cursor: wait; }
+.secondary-action { background: transparent; color: var(--ink); }
+.secondary-action:hover { background: var(--sun); }
+.reset-disclosure__status { min-height: 1.4rem; margin: .75rem 0 0; color: #7a211d; font: 700 .68rem var(--utility); }
+.reset-result { min-height: calc(100svh - 5rem); display: grid; place-items: center; padding: var(--space-4) var(--space-2); }
+.reset-receipt { width: min(100%, 54rem); padding: var(--space-3); background: var(--paper); color: var(--ink); border-left: .7rem solid var(--sun); box-shadow: .8rem .8rem 0 var(--storm); }
+.reset-receipt--failed { border-left-color: var(--signal); }
+.reset-receipt .eyebrow { color: #9d2c25; }
+.reset-receipt h1 { max-width: 45rem; color: var(--ink); font-size: clamp(3.5rem, 10vw, 7rem); }
+.reset-receipt__lede { max-width: 45rem; font-size: 1.15rem; }
+.reset-receipt > p:not(.eyebrow) { max-width: 45rem; }
+.reset-receipt .primary-action { margin-top: var(--space-2); color: var(--ink); box-shadow: .4rem .4rem 0 var(--storm); }
 .feedback-room { min-height: calc(100svh - 5rem); display: grid; place-items: center; padding: var(--space-4) var(--space-2); }
 .feedback-card { width: min(100%, 52rem); padding: var(--space-3); background: var(--deep-water); border: 1px solid rgb(215 226 223 / 28%); box-shadow: .65rem .65rem 0 var(--signal); }
 .feedback-card h1 { margin: 0 0 var(--space-2); font-size: clamp(4rem, 10vw, 8rem); }
@@ -403,6 +429,12 @@ footer a { text-underline-offset: .25rem; }
   .archive-empty { margin-left: 3.5rem; }
   .episode-page > header { min-height: auto; }
   footer { flex-direction: column; }
+  .reset-disclosure { order: 3; }
+  .reset-disclosure > summary { margin-left: 0; }
+  .reset-disclosure__sheet { position: relative; right: auto; bottom: auto; margin: 1rem 0; translate: none; }
+  .reset-disclosure__sheet::after { display: none; }
+  .reset-disclosure__actions, .reset-receipt__actions { flex-direction: column-reverse; }
+  .reset-disclosure__actions form, .danger-action, .secondary-action { width: 100%; }
 }
 @media (max-width: 360px) { h1 { font-size: 4rem; } .wordmark__beam { display: none; } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .rain { animation: none; } }

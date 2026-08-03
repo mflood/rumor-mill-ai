@@ -30,7 +30,7 @@ governed by the provider account's data-control settings and must be reviewed be
 
 ## Visitor deletion
 
-`DELETE /api/v1/visitors/session` and the **Forget/reset** server-rendered action permanently delete
+`DELETE /api/v1/visitors/session` and the **Erase my visit data** server-rendered action permanently delete
 the visitor row, conversations, relationship state, and reports in one transaction, then expire the
 browser cookie. Shared canonical simulation and published content are intentionally unaffected.
 Starting a new session rotates the identity and deletes an existing cookie-linked identity.
