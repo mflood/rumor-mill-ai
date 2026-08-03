@@ -16,7 +16,15 @@ from urllib.parse import parse_qs, quote
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, status
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -414,6 +422,19 @@ def create_app(
         correlation_id.reset(token)
         return response
 
+    @app.exception_handler(RequestValidationError)
+    async def lighthouse_validation_error(
+        request: Request, error: RequestValidationError
+    ) -> Response:
+        if request.url.path.startswith("/lighthouse/runs/") and any(
+            item.get("loc", ())[:2] == ("path", "run_id") for item in error.errors()
+        ):
+            return PlainTextResponse("season not found", status_code=status.HTTP_404_NOT_FOUND)
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content=jsonable_encoder({"detail": error.errors()}),
+        )
+
     def uow_factory() -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(session_factory)
 
@@ -627,6 +648,88 @@ def create_app(
             return None
         run = database.get(RunModel, visitor.active_run_id)
         return run if run is not None and run.status == RunStatus.RUNNING else None
+
+    def selected_story(database: Session, token: str | None) -> RunModel | None:
+        """Return a visitor's season while its public and private history remains valid."""
+        visitor = optional_visitor(database, token)
+        if visitor is None or visitor.active_run_id is None:
+            return None
+        run = database.get(RunModel, visitor.active_run_id)
+        return (
+            run
+            if run is not None
+            and run.status in {RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.COMPLETED}
+            else None
+        )
+
+    def require_selected_story(visitor: VisitorModel, run_id: UUID, run: RunRecord) -> None:
+        if (
+            visitor.active_run_id is not None and visitor.active_run_id != run_id
+        ) or run.status not in {
+            RunStatus.RUNNING,
+            RunStatus.PAUSED,
+            RunStatus.COMPLETED,
+        }:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "season not found")
+
+    def lighthouse_navigation(
+        run: RunRecord | RunModel | None,
+        *,
+        current: Literal["today", "town", "people", "archive"] | None = None,
+        include_people: bool = False,
+    ) -> str:
+        """Render the one Lighthouse primary-navigation contract."""
+        run_id = run.id if run is not None else None
+        hrefs = {
+            "today": "/lighthouse/today",
+            "town": f"/lighthouse/runs/{run_id}/town" if include_people else "/lighthouse/town",
+            "people": f"/lighthouse/runs/{run_id}/people",
+            "archive": (
+                f"/lighthouse/runs/{run_id}/archive" if include_people else "/lighthouse/archive"
+            ),
+        }
+        labels = [("today", "Today"), ("town", "Town")]
+        if include_people:
+            labels.append(("people", "People"))
+        labels.append(("archive", "Archive"))
+
+        def nav_link(key: str, label: str) -> str:
+            current_attribute = ' aria-current="page"' if current == key else ""
+            return f'<a href="{hrefs[key]}"{current_attribute}>{label}</a>'
+
+        links = "".join(nav_link(key, label) for key, label in labels)
+        return f'<nav aria-label="Primary navigation">{links}</nav>'
+
+    def published_archive_runs(database: Session) -> list[RunModel]:
+        """Return newest-first seasons that own committed public recap artifacts."""
+        try:
+            candidates = list(
+                database.scalars(
+                    select(RunModel)
+                    .join(ArtifactModel, ArtifactModel.run_id == RunModel.id)
+                    .where(ArtifactModel.kind == "daily_recap")
+                    .order_by(RunModel.started_at.desc(), RunModel.id)
+                ).unique()
+            )
+            return [
+                run
+                for run in candidates
+                if any(
+                    artifact.payload.get("visibility", "public") == "public"
+                    and artifact.payload.get("canonical", True)
+                    and validated_recap(artifact) is not None
+                    for artifact in database.scalars(
+                        select(ArtifactModel).where(
+                            ArtifactModel.run_id == run.id,
+                            ArtifactModel.kind == "daily_recap",
+                        )
+                    )
+                )
+            ]
+        except Exception:  # A database outage must still render an honest public shell.
+            database.rollback()
+            logger.exception("archive_availability_check_failed")
+            return []
 
     def run_story_day(run: RunModel | RunRecord) -> int:
         simulation_time = run.simulation_time or run.started_at
@@ -1092,6 +1195,35 @@ def create_app(
                 'Day 1 <span aria-hidden="true">·</span> <span>Night</span>',
                 escape(live_clock_label(run)),
             )
+            document = document.replace("<!-- PRIMARY_NAVIGATION -->", lighthouse_navigation(run))
+        else:
+            has_history = bool(published_archive_runs(database))
+            navigation = (
+                '<nav class="unavailable-navigation" aria-label="Primary navigation">'
+                '<span aria-disabled="true">Today</span><span aria-disabled="true">Town</span>'
+                '<a href="/lighthouse/archive">Archive</a></nav>'
+                if has_history
+                else '<nav class="unavailable-navigation" aria-label="Story navigation unavailable while between seasons"><span aria-disabled="true">Today</span><span aria-disabled="true">Town</span><span aria-disabled="true">Archive</span></nav>'
+            )
+            document = (
+                document.replace("<!-- PRIMARY_NAVIGATION -->", navigation)
+                .replace(
+                    "<!-- INTERMISSION_COPY -->",
+                    (
+                        "No season is progressing, but previous seasons remain available in the Archive."
+                        if has_history
+                        else "No season is progressing, and no public story has been published yet."
+                    ),
+                )
+                .replace(
+                    "<!-- INTERMISSION_ACTION -->",
+                    (
+                        'Read a previous season in the <a href="/lighthouse/archive">Archive</a>, or return later when Greyhaven reopens.'
+                        if has_history
+                        else "Bookmark this page and return later. Story navigation will appear when Greyhaven opens."
+                    ),
+                )
+            )
         return HTMLResponse(document)
 
     @app.get("/lighthouse/today", response_class=HTMLResponse, include_in_schema=False)
@@ -1116,6 +1248,10 @@ def create_app(
             return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         run, world = load_run(run_model.id)
         document = (web_root / "today.html").read_text(encoding="utf-8")
+        document = document.replace(
+            "<!-- PRIMARY_NAVIGATION -->",
+            lighthouse_navigation(run, current="today", include_people=True),
+        )
         document = document.replace(
             'Day 1 <span aria-hidden="true">·</span> Night', live_clock_markup(run)
         )
@@ -1189,10 +1325,19 @@ def create_app(
         database: Annotated[Session, Depends(session)],
         token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
     ) -> Response:
-        """Render a useful archive fallback when no live run has been selected."""
-        run = active_story(database, token)
+        """Resolve the current season, then the newest season with published history."""
+        run = available_story(database)
         if run is None:
-            return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
+            history = published_archive_runs(database)
+            run = history[0] if history else None
+        if run is None:
+            document = (web_root / "archive.html").read_text(encoding="utf-8")
+            return HTMLResponse(
+                document.replace(
+                    "<!-- PRIMARY_NAVIGATION -->",
+                    lighthouse_navigation(None, current="archive"),
+                )
+            )
         return RedirectResponse(f"/lighthouse/runs/{run.id}/archive", status_code=307)
 
     @app.get("/lighthouse/feedback", response_class=HTMLResponse, include_in_schema=False)
@@ -2089,6 +2234,7 @@ def create_app(
         world: WorldDefinition,
         database: Session,
         *,
+        include_people: bool = False,
         selected_location_id: str | None = None,
         expected_recommendation: str | None = None,
         expected_character_id: str | None = None,
@@ -2234,14 +2380,23 @@ def create_app(
         return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(page_title)} — The Lighthouse</title><link rel="stylesheet" href="/static/lighthouse.css"></head>
 <body><a class="skip-link" href="#town">Skip to the town</a>
-<header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {day} <span aria-hidden="true">·</span> {simulation_time.strftime("%H:%M")}</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town" aria-current="page">Town</a><a href="/lighthouse/archive">Archive</a></nav></header>
+<header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {day} <span aria-hidden="true">·</span> {simulation_time.strftime("%H:%M")}</p>{lighthouse_navigation(run, current="town", include_people=include_people)}</header>
 <main id="town" class="town-experience" tabindex="-1">{stale}<div class="town-layout">{detail}<nav class="island-chart" aria-label="Greyhaven locations"><p class="chart-label">Public presence chart</p><ol>{map_links}</ol><p class="chart-key"><span aria-hidden="true">●</span> Positions only show public activity. Private movements remain private.</p></nav></div></main>
 <footer><p>The Lighthouse is a living story by Rumor Mill.</p><p><span class="status-dot" aria-hidden="true"></span>Greyhaven is unfolding</p></footer></body></html>"""
 
     @app.get("/lighthouse/runs/{run_id}/town", response_class=HTMLResponse, include_in_schema=False)
-    def live_town(run_id: UUID, database: Annotated[Session, Depends(session)]) -> HTMLResponse:
+    def live_town(
+        run_id: UUID,
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
+    ) -> HTMLResponse:
         run, world = load_run(run_id)
-        return HTMLResponse(town_document(run, world, database))
+        selected = selected_story(database, token)
+        return HTMLResponse(
+            town_document(
+                run, world, database, include_people=selected is not None and selected.id == run_id
+            )
+        )
 
     @app.get(
         "/lighthouse/runs/{run_id}/town/{location_id}",
@@ -2252,6 +2407,7 @@ def create_app(
         run_id: UUID,
         location_id: str,
         database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
         recommended: str | None = None,
         character: str | None = None,
     ) -> HTMLResponse:
@@ -2263,6 +2419,10 @@ def create_app(
                 run,
                 world,
                 database,
+                include_people=(
+                    (selected := selected_story(database, token)) is not None
+                    and selected.id == run_id
+                ),
                 selected_location_id=location_id,
                 expected_recommendation=recommended,
                 expected_character_id=character,
@@ -2365,7 +2525,7 @@ def create_app(
         return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(title)} — The Lighthouse</title><link rel="stylesheet" href="/static/lighthouse.css"></head>
 <body><a class="skip-link" href="#people">Skip to the cast</a>
-<header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {story_day(run)} <span aria-hidden="true">·</span> {simulation_time.strftime("%H:%M")}</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town">Town</a><a href="/lighthouse/runs/{run.id}/people" aria-current="page">People</a></nav></header>
+<header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {story_day(run)} <span aria-hidden="true">·</span> {simulation_time.strftime("%H:%M")}</p>{lighthouse_navigation(run, current="people", include_people=True)}</header>
 <main id="people" class="cast-ledger" tabindex="-1">{content}</main>
 <footer><p>Your cast ledger only records public facts and encounters from this visit.</p><p><span class="status-dot" aria-hidden="true"></span>Private to you</p></footer></body></html>"""
 
@@ -2378,6 +2538,7 @@ def create_app(
         database: Annotated[Session, Depends(session)],
     ) -> HTMLResponse:
         run, world = load_run(run_id)
+        require_selected_story(visitor, run_id, run)
         cards = []
         for character in world.cast:
             state_model = visitor_character_state(database, visitor.id, run_id, character.id)
@@ -2410,6 +2571,7 @@ def create_app(
         database: Annotated[Session, Depends(session)],
     ) -> HTMLResponse:
         run, world = load_run(run_id)
+        require_selected_story(visitor, run_id, run)
         character = next((item for item in world.cast if item.id == character_id), None)
         if character is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "character not found")
@@ -2447,10 +2609,15 @@ def create_app(
             if location_id is not None
             else escape(availability)
         )
+        historical = run.status != RunStatus.RUNNING
         talk_markup = (
             f'<section class="private-contact" aria-labelledby="private-contact-title"><h2 id="private-contact-title">Private contact</h2><p>{escape(contact_copy)}</p><form action="/lighthouse/runs/{run.id}/talk/{escape(character.id)}" method="post"><button class="primary-action" data-playable-action="contact" type="submit">Message {escape(character.name)} privately <span aria-hidden="true">→</span></button></form></section>'
-            if contact_mode != "unavailable"
-            else f'<section class="private-contact" aria-labelledby="private-contact-title"><h2 id="private-contact-title">Private contact</h2><p class="offline-note">{escape(contact_copy)}</p><button class="primary-action" type="button" disabled>Private line unavailable</button></section>'
+            if contact_mode != "unavailable" and not historical
+            else (
+                '<section class="private-contact" aria-labelledby="private-contact-title"><h2 id="private-contact-title">Private contact</h2><p class="offline-note">This season is no longer live. Your previous notes remain available here, but new contact is read-only.</p><button class="primary-action" type="button" disabled>Season contact closed</button></section>'
+                if historical
+                else f'<section class="private-contact" aria-labelledby="private-contact-title"><h2 id="private-contact-title">Private contact</h2><p class="offline-note">{escape(contact_copy)}</p><button class="primary-action" type="button" disabled>Private line unavailable</button></section>'
+            )
         )
         content = f"""<article class="profile-file" aria-labelledby="profile-name"><a class="back-link" href="/lighthouse/runs/{run.id}/people">← Return to the cast ledger</a><header><div class="profile-monogram" aria-hidden="true">{escape(character.name[0])}</div><div><p class="eyebrow">Public character file</p><h1 id="profile-name">{escape(character.name)}</h1><p class="profile-bio">{escape(character.description)}</p></div></header><div class="profile-facts"><section><h2>Voice</h2><p>{escape(character.public_voice or "Their voice is not publicly known yet.")}</p></section><section><h2>Whereabouts</h2><p>{location_markup}</p></section><section><h2>Known connections</h2><ul>{connections_markup}</ul></section></div><aside class="margin-notes" aria-labelledby="notes-title"><p class="eyebrow">Written from your visit</p><h2 id="notes-title">What stands between you</h2><p class="relationship-cue">{escape(relationship)}</p><h3>Your remembered exchanges</h3><ul>{memory_markup}</ul></aside>{talk_markup}</article>"""
         return HTMLResponse(profile_shell(run, character.name, content))
@@ -2528,10 +2695,25 @@ def create_app(
         description: str,
         canonical_path: str,
         content: str,
+        *,
+        include_people: bool,
     ) -> str:
         return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(title)} — The Lighthouse</title><meta name="description" content="{escape(description)}"><meta property="og:type" content="article"><meta property="og:title" content="{escape(title)} — The Lighthouse"><meta property="og:description" content="{escape(description)}"><meta property="og:url" content="{escape(canonical_path)}"><meta property="og:site_name" content="The Lighthouse"><meta property="og:image" content="/static/lighthouse-social.jpg"><meta name="twitter:card" content="summary_large_image"><link rel="canonical" href="{escape(canonical_path)}"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/lighthouse.css"></head>
-<body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>{escape(live_clock_label(run))}</p><nav aria-label="Primary navigation"><a href="/lighthouse/today">Today</a><a href="/lighthouse/runs/{run.id}/town">Town</a><a href="/lighthouse/runs/{run.id}/archive" aria-current="page">Archive</a></nav></header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only public dispatches appear here; private conversations stay private.</p><p><span class="status-dot" aria-hidden="true"></span>Published in season order</p></footer></body></html>"""
+<body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>{escape(live_clock_label(run))}</p>{lighthouse_navigation(run, current="archive", include_people=include_people)}</header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only public dispatches appear here; private conversations stay private.</p><p><span class="status-dot" aria-hidden="true"></span>Published in season order</p></footer></body></html>"""
+
+    def season_selection_markup(database: Session, run_id: UUID) -> str:
+        history = published_archive_runs(database)
+        if len(history) < 2:
+            return ""
+        links = "".join(
+            (
+                f"<li><strong>{'Selected season' if item.id == run_id else 'Previous season'}</strong> "
+                f'<a href="/lighthouse/runs/{item.id}/archive">Season beginning {_aware(item.started_at).strftime("%B %d, %Y")}</a></li>'
+            )
+            for item in history
+        )
+        return f'<nav class="season-selector" aria-label="Published seasons"><p class="eyebrow">Choose a season</p><ol>{links}</ol></nav>'
 
     @app.get(
         "/lighthouse/runs/{run_id}/archive",
@@ -2542,9 +2724,12 @@ def create_app(
         run_id: UUID,
         database: Annotated[Session, Depends(session)],
         through: Annotated[UUID | None, Query()] = None,
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
     ) -> HTMLResponse:
         run, _ = load_run(run_id)
         recaps = published_recaps(database, run_id)
+        if run.status != RunStatus.RUNNING and not recaps:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "published season not found")
         visible = recaps
         boundary_note = "Showing every published episode."
         if through is not None:
@@ -2568,7 +2753,9 @@ def create_app(
             else ""
         )
         summary = story_so_far(visible)
-        content = f"""<header class="archive-heading"><p class="eyebrow">The season so far</p><h1>Previously,<br>in Greyhaven.</h1><p>{escape(summary)}</p><div class="spoiler-boundary" role="status"><strong>How far you have read</strong><span>{escape(boundary_note)}</span></div></header><ol class="episode-reel">{"".join(episode_items)}{empty}</ol>"""
+        selector = season_selection_markup(database, run_id)
+        content = f"""<header class="archive-heading"><p class="eyebrow">The season so far</p><h1>Previously,<br>in Greyhaven.</h1><p>{escape(summary)}</p><div class="spoiler-boundary" role="status"><strong>How far you have read</strong><span>{escape(boundary_note)}</span></div></header>{selector}<ol class="episode-reel">{"".join(episode_items)}{empty}</ol>"""
+        selected = selected_story(database, token)
         return HTMLResponse(
             archive_shell(
                 run,
@@ -2576,6 +2763,7 @@ def create_app(
                 summary,
                 f"/lighthouse/runs/{run.id}/archive",
                 content,
+                include_people=selected is not None and selected.id == run_id,
             )
         )
 
@@ -2588,6 +2776,7 @@ def create_app(
         run_id: UUID,
         episode_id: UUID,
         database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
     ) -> HTMLResponse:
         run, _ = load_run(run_id)
         recaps = published_recaps(database, run_id)
@@ -2614,6 +2803,7 @@ def create_app(
             else "<span>You are caught up</span>"
         )
         content = f"""<article class="episode-page" data-meaningful-public-content="dispatch" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={artifact.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{artifact.generated_at.isoformat()}">Published {artifact.generated_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={artifact.id}&amp;artifact_id={artifact.id}">Flag this episode</a></header><section class="archive-panels" aria-label="Episode panels">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
+        selected = selected_story(database, token)
         return HTMLResponse(
             archive_shell(
                 run,
@@ -2621,6 +2811,7 @@ def create_app(
                 recap.dek,
                 f"/lighthouse/runs/{run.id}/archive/{artifact.id}",
                 content,
+                include_people=selected is not None and selected.id == run_id,
             )
         )
 
@@ -2963,7 +3154,9 @@ def create_app(
         visitor: Annotated[VisitorModel, Depends(require_visitor)],
         database: Annotated[Session, Depends(session)],
     ) -> ConversationResponse:
-        _, world = load_run(run_id)
+        run, world = load_run(run_id)
+        if run.status != RunStatus.RUNNING:
+            raise HTTPException(status.HTTP_409_CONFLICT, "this season is read-only")
         character = next((item for item in world.cast if item.id == request.character_id), None)
         if character is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "character not found")
@@ -3005,13 +3198,16 @@ def create_app(
         run_id: UUID,
         visitor: Annotated[VisitorModel, Depends(require_visitor)],
     ) -> HTMLResponse:
-        del visitor
         run, world = load_run(run_id)
+        require_selected_story(visitor, run_id, run)
+        historical = run.status != RunStatus.RUNNING
         cards = []
         for character in world.cast:
-            available = private_contact_mode(character) != "unavailable"
+            available = private_contact_mode(character) != "unavailable" and not historical
             label = (
-                f"Message {character.name} privately" if available else "Private line unavailable"
+                f"Message {character.name} privately"
+                if available
+                else ("Season contact closed" if historical else "Private line unavailable")
             )
             disabled = "" if available else " disabled"
             contact_copy = private_contact_copy(
@@ -3028,7 +3224,12 @@ def create_app(
                 f'<button type="submit"{disabled}>{escape(label)}</button></form></article>'
             )
         page = (web_root / "talk.html").read_text(encoding="utf-8")
-        return HTMLResponse(page.replace("<!-- CHARACTER_CARDS -->", "".join(cards)))
+        return HTMLResponse(
+            page.replace("<!-- CHARACTER_CARDS -->", "".join(cards)).replace(
+                "<!-- PRIMARY_NAVIGATION -->",
+                lighthouse_navigation(run, current="people", include_people=True),
+            )
+        )
 
     @app.post("/lighthouse/runs/{run_id}/talk/{character_id}", include_in_schema=False)
     def begin_character_chat(
@@ -3037,6 +3238,8 @@ def create_app(
         visitor: Annotated[VisitorModel, Depends(require_visitor)],
         database: Annotated[Session, Depends(session)],
     ) -> RedirectResponse:
+        run, _ = load_run(run_id)
+        require_selected_story(visitor, run_id, run)
         created = start_conversation(
             run_id, StartConversationRequest(character_id=character_id), visitor, database
         )
@@ -3067,13 +3270,25 @@ def create_app(
         database: Annotated[Session, Depends(session)],
     ) -> HTMLResponse:
         model = owned_conversation(conversation_id, visitor.id, database)
-        _, world = load_run(model.run_id)
+        run, world = load_run(model.run_id)
+        require_selected_story(visitor, model.run_id, run)
         character = next(item for item in world.cast if item.id == model.participant_ids[0])
         page = (web_root / "conversation.html").read_text(encoding="utf-8")
+        line_status = private_line_status(character)
+        if run.status != RunStatus.RUNNING:
+            line_status = "This season is no longer live. This private exchange is read-only."
+            page = page.replace(
+                '<form class="dispatch-console" id="composer" aria-busy="false">\n        <label for="message">What do you ask?</label>\n        <textarea id="message" maxlength="4000" required rows="3"></textarea>\n        <div><span id="count">0 / 4000</span><button type="submit">Send across the line</button></div>\n      </form>',
+                '<p class="line-status" role="status"><strong>This season is read-only.</strong> You can review this private exchange, but cannot send new messages.</p>',
+            )
         return HTMLResponse(
             page.replace("{{ conversation_id }}", str(model.id))
             .replace("{{ character_name }}", escape(character.name))
-            .replace("{{ line_status }}", escape(private_line_status(character)))
+            .replace("{{ line_status }}", escape(line_status))
+            .replace(
+                "<!-- PRIMARY_NAVIGATION -->",
+                lighthouse_navigation(run, current="people", include_people=True),
+            )
         )
 
     @app.get(
@@ -3102,6 +3317,9 @@ def create_app(
         database: Annotated[Session, Depends(session)],
     ) -> ConversationResponse:
         model = owned_conversation(conversation_id, visitor.id, database)
+        run, _ = load_run(model.run_id)
+        if run.status != RunStatus.RUNNING:
+            raise HTTPException(status.HTTP_409_CONFLICT, "this season is read-only")
         _, response = complete_turn(model, request, database, visitor.id)
         return response
 
@@ -3117,6 +3335,9 @@ def create_app(
         database: Annotated[Session, Depends(session)],
     ) -> StreamingResponse:
         model = owned_conversation(conversation_id, visitor.id, database)
+        run, _ = load_run(model.run_id)
+        if run.status != RunStatus.RUNNING:
+            raise HTTPException(status.HTTP_409_CONFLICT, "this season is read-only")
         events, _ = complete_turn(model, request, database, visitor.id)
 
         def event_stream() -> Any:

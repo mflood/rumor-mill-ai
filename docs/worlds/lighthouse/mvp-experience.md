@@ -43,10 +43,28 @@ Every visitor-facing page uses the following hierarchy:
 3. **Orientation:** time, place, participants, and whether information is rumor or established.
 4. **Primary action:** continue, ask, visit, or read the next episode; only one emphasized action.
 5. **Supporting context:** character cards, location notes, provenance, and prior episodes.
-6. **Global navigation:** Story, Town, and Archive. "Story" returns to the current reading position.
+6. **Global navigation:** Before entry, Today, Town, and Archive. After entry, Today, Town, People,
+   and Archive in that order. Today returns to the current published story state.
 
 Persistent chrome must not reveal protected information. The current day is public; clue counts,
 secret progress bars, and completion percentages are not.
+
+### Navigation and season lifecycle contract
+
+Navigation expresses stable capabilities rather than the amount of content currently available.
+Character presence never hides People, and episode count never hides Archive.
+
+| Visitor and season state | Primary navigation | Archive | People and contact |
+| --- | --- | --- | --- |
+| Active season, before entry | Today · Town · Archive | Public, including the truthful empty state | Hidden; rendering chrome creates no visitor ledger |
+| Active entered visit | Today · Town · People · Archive | Public and season-scoped | Visitor-scoped; contact follows current character availability |
+| Paused or completed selected season | Today · Town · People · Archive | Published episodes remain immutable and readable | The owning visitor's ledger remains readable; new contact is disabled |
+| Between seasons, published history exists | Archive is the only enabled capability | The newest published season is selected deterministically, with links to other published seasons | Hidden until a visitor restores a season-scoped context |
+| Between seasons, no published history | No available-looking destination | Honest empty state; never a 503 or dead link | Hidden |
+
+Every core route marks exactly one section with `aria-current="page"`. Player-facing labels use
+“season”; run IDs and run lifecycle terms remain implementation details. Opening or selecting an
+Archive does not advance the simulation, mark an episode read, or alter conversations.
 
 ## Visitor model
 
@@ -313,7 +331,7 @@ the whole viewport with a spinner.
 | Town | "No one is available here yet" plus open locations | Location card retains name and dimensions; no pulsing map | Preserve last known availability, mark it "May be out of date," and offer refresh |
 | Conversation | "[Character] has nothing more to add today" with conversation history | After submit, lock only the selected form, announce "Asking…", and keep the exchange visible | Keep the chosen question, announce failure, allow a safe retry with the same idempotency key; never display a fabricated reply |
 | Daily recap | Before day close: "Day {n} is still unfolding" and **Back to story** | Render headings and fixed-ratio panel placeholders | Link to the day's episodes; label recap unavailable rather than inferring one |
-| Archive | "No episodes published yet" with premise and **Enter Greyhaven** | Render day headings and stable entry placeholders | Keep any cached entries, say results may be incomplete, and offer retry |
+| Archive | "No episodes published yet"; active seasons remain selectable without entry | Render day headings and stable entry placeholders | Keep any committed entries, say results may be incomplete, and offer retry |
 | Illustration | N/A | Reserve aspect ratio to prevent layout shift | Show meaningful alt text and styled text panel; story comprehension must not depend on image recovery |
 
 Mutating requests use a client-generated idempotency key. A timeout never invites a second distinct
