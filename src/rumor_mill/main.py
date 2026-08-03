@@ -632,9 +632,67 @@ def create_app(
         simulation_time = run.simulation_time or run.started_at
         return max(1, min(14, (simulation_time.date() - run.started_at.date()).days + 1))
 
-    def live_clock_label(run: RunModel | RunRecord) -> str:
-        simulation_time = run.simulation_time or run.started_at
-        return f"Day {run_story_day(run)} · {simulation_time.strftime('%H:%M')}"
+    def projected_simulation_time(
+        run: RunModel | RunRecord, *, now: datetime | None = None
+    ) -> datetime:
+        """Project persisted clock state using the scheduler's wall-clock semantics."""
+        simulation_time = _aware(run.simulation_time or run.started_at)
+        status_value = run.status.value if isinstance(run.status, RunStatus) else run.status
+        mode_value = (
+            run.clock_mode.value if isinstance(run.clock_mode, ClockMode) else run.clock_mode
+        )
+        if status_value != RunStatus.RUNNING.value or mode_value != ClockMode.WALL.value:
+            return simulation_time
+
+        current_time = _aware(now or datetime.now(UTC))
+        anchor = _aware(run.wall_time_anchor or run.started_at)
+        elapsed = max(0.0, (current_time - anchor).total_seconds())
+        ticks = min(
+            int(elapsed * float(run.clock_rate) // run.tick_seconds),
+            run.max_catch_up_ticks,
+        )
+        return simulation_time + timedelta(seconds=ticks * run.tick_seconds)
+
+    def live_clock_label(run: RunModel | RunRecord, *, now: datetime | None = None) -> str:
+        simulation_time = projected_simulation_time(run, now=now)
+        day = max(1, min(14, (simulation_time.date() - run.started_at.date()).days + 1))
+        return f"Day {day} · {simulation_time.strftime('%H:%M')}"
+
+    def live_clock_payload(run: RunModel | RunRecord) -> dict[str, str | float | int]:
+        server_time = datetime.now(UTC)
+        status_value = run.status.value if isinstance(run.status, RunStatus) else run.status
+        mode_value = (
+            run.clock_mode.value if isinstance(run.clock_mode, ClockMode) else run.clock_mode
+        )
+        return {
+            "runStatus": status_value,
+            "clockMode": mode_value,
+            "simulationTime": _aware(run.simulation_time or run.started_at).isoformat(),
+            "wallTimeAnchor": _aware(run.wall_time_anchor or run.started_at).isoformat(),
+            "serverTime": server_time.isoformat(),
+            "startDate": _aware(run.started_at).date().isoformat(),
+            "clockRate": float(run.clock_rate),
+            "tickSeconds": run.tick_seconds,
+            "maxCatchUpTicks": run.max_catch_up_ticks,
+            "label": live_clock_label(run, now=server_time),
+        }
+
+    def live_clock_markup(run: RunModel | RunRecord) -> str:
+        """Render an accessible clock snapshot plus browser projection inputs."""
+        clock = live_clock_payload(run)
+        return (
+            '<span data-live-clock data-clock-url="/lighthouse/today/clock" '
+            f'data-run-status="{escape(str(clock["runStatus"]))}" '
+            f'data-clock-mode="{escape(str(clock["clockMode"]))}" '
+            f'data-simulation-time="{escape(str(clock["simulationTime"]))}" '
+            f'data-wall-time-anchor="{escape(str(clock["wallTimeAnchor"]))}" '
+            f'data-server-time="{escape(str(clock["serverTime"]))}" '
+            f'data-start-date="{escape(str(clock["startDate"]))}" '
+            f'data-clock-rate="{clock["clockRate"]:g}" '
+            f'data-tick-seconds="{clock["tickSeconds"]}" '
+            f'data-max-catch-up-ticks="{clock["maxCatchUpTicks"]}">'
+            f"{escape(str(clock['label']))}</span>"
+        )
 
     def dispatch_status_markup(database: Session, run: RunRecord, world: WorldDefinition) -> str:
         """Describe the next authoritative public story-work boundary.
@@ -1058,8 +1116,9 @@ def create_app(
             return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         run, world = load_run(run_model.id)
         document = (web_root / "today.html").read_text(encoding="utf-8")
-        live_label = escape(live_clock_label(run))
-        document = document.replace('Day 1 <span aria-hidden="true">·</span> Night', live_label)
+        document = document.replace(
+            'Day 1 <span aria-hidden="true">·</span> Night', live_clock_markup(run)
+        )
         recap_artifact = latest_published_recap_artifact(database, run.id)
         latest_recap = validated_recap(recap_artifact)
         dispatch_day = (
@@ -1094,6 +1153,25 @@ def create_app(
         visitor.last_seen_at = datetime.now(UTC)
         database.commit()
         return HTMLResponse(document)
+
+    @app.get("/lighthouse/today/clock", include_in_schema=False)
+    def lighthouse_today_clock(
+        database: Annotated[Session, Depends(session)],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
+    ) -> dict[str, str | float | int]:
+        """Return fresh authoritative inputs for an open Today-page clock."""
+        visitor = optional_visitor(database, token)
+        if visitor is None or visitor.active_run_id is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "visitor session is required")
+        run_model = database.get(RunModel, visitor.active_run_id)
+        if run_model is None or run_model.status not in {
+            RunStatus.RUNNING,
+            RunStatus.PAUSED,
+            RunStatus.COMPLETED,
+        }:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "active story not found")
+        run, _ = load_run(run_model.id)
+        return live_clock_payload(run)
 
     @app.get("/lighthouse/town", response_class=HTMLResponse, include_in_schema=False)
     def lighthouse_town(

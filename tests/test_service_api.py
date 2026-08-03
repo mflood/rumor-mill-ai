@@ -1477,6 +1477,77 @@ def test_today_dispatch_countdown_uses_live_schedule_and_progresses_in_browser(a
     assert "reload for the latest state" in script.text
 
 
+def test_today_header_clock_projects_wall_time_and_holds_paused_manual_modes(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    assert client.get("/lighthouse/today/clock").status_code == 401
+    run_id = UUID(str(initialize(client)["id"]))
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    started_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.status = "running"
+        run.clock_mode = "wall"
+        run.started_at = started_at
+        run.simulation_time = started_at + timedelta(hours=23, minutes=55)
+        run.wall_time_anchor = datetime.now(UTC) - timedelta(minutes=10, seconds=1)
+        run.clock_rate = 1
+        run.tick_seconds = 300
+        run.max_catch_up_ticks = 12
+        database.commit()
+
+    wall = client.get("/lighthouse/today")
+    assert wall.status_code == 200
+    assert "Day 2 · 00:05" in wall.text
+    assert 'data-live-clock data-clock-url="/lighthouse/today/clock"' in wall.text
+    assert 'data-run-status="running"' in wall.text
+    assert 'data-clock-mode="wall"' in wall.text
+    assert 'data-clock-rate="1"' in wall.text
+    assert 'data-tick-seconds="300"' in wall.text
+
+    refreshed = client.get("/lighthouse/today/clock")
+    assert refreshed.status_code == 200
+    assert refreshed.json()["label"] == "Day 2 · 00:05"
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.clock_mode = "manual"
+        database.commit()
+    manual = client.get("/lighthouse/today")
+    assert "Day 1 · 23:55" in manual.text
+    assert 'data-clock-mode="manual"' in manual.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.status = "paused"
+        run.clock_mode = "paused"
+        database.commit()
+    paused = client.get("/lighthouse/today")
+    assert paused.status_code == 200
+    assert "Day 1 · 23:55" in paused.text
+    assert 'data-run-status="paused"' in paused.text
+    assert 'data-clock-mode="paused"' in paused.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.status = "failed"
+        database.commit()
+    assert client.get("/lighthouse/today/clock").status_code == 404
+
+    script = client.get("/static/live-clock.js")
+    assert script.status_code == 200
+    assert "performance.now() - state.loadedAt" in script.text
+    assert 'source.runStatus === "running" && source.clockMode === "wall"' in script.text
+    assert "Math.floor((currentDate - state.startDate) / 86_400_000) + 1" in script.text
+    assert "window.setInterval(update, 1_000)" in script.text
+    assert "fetch(clock.dataset.clockUrl" in script.text
+    assert "aria-live" not in wall.text.split('<p class="town-clock">', 1)[1].split("</p>", 1)[0]
+
+
 def test_today_dispatch_status_handles_manual_paused_overdue_and_season_end(api) -> None:  # type: ignore[no-untyped-def]
     client, factory = api
     run_id = UUID(str(initialize(client)["id"]))
