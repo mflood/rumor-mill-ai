@@ -1,7 +1,7 @@
 # Public MVP launch checklist
 
 Owner: project maintainer
-Last reviewed: 2026-08-02
+Last reviewed: 2026-08-03
 
 This checklist is the release record for The Lighthouse public MVP. Check an item only against the
 candidate production release. Record the release ID, reviewer, date, and evidence link in the PR or
@@ -21,16 +21,22 @@ release notes.
 
 ## Experience pass
 
-- [ ] Current Chrome, Firefox, and Safari: first visit, enter story, Today, Town, Archive, feedback,
-  session reset, and browser Back all work.
+- [ ] Current Chrome, Firefox, and Safari: first visit, enter story, Today, Town, People, Archive,
+  feedback, session reset, and browser Back all work. Every entered active-visit page shows
+  **Today · Town · People · Archive** in that order; before entry, Archive is public and People is
+  hidden.
 - [ ] iOS Safari and Android Chrome at 320, 375, and 768 CSS pixels have no horizontal overflow;
   controls remain usable with one hand and at 200% zoom.
 - [ ] Keyboard-only navigation has a visible focus indicator, logical order, working skip links,
-  and no traps. VoiceOver or NVDA announces landmarks, headings, status messages, and controls.
+  and no traps. The four-item global navigation has an accessible name, follows DOM/focus order,
+  and marks exactly one destination with `aria-current="page"`. VoiceOver or NVDA announces
+  landmarks, headings, status messages, and controls.
 - [ ] Reduced motion, forced colors, images disabled, JavaScript disabled, slow network, and offline
   failure states remain understandable and recoverable.
-- [ ] Empty archive/town states, expired sessions, unavailable characters/provider, duplicate submit,
-  validation errors, and report failures provide a next action without exposing internals.
+- [ ] Empty Archive/Town/People states, zero-publication and quiet active visits, paused/completed
+  seasons, both between-season history states, expired sessions, unavailable characters/provider,
+  duplicate submit, validation errors, and report failures provide a next action without exposing
+  internal run IDs, hidden story state, or another visitor's notes.
 - [ ] No broken internal links. The production smoke check passes:
   `uv run python scripts/smoke_deployment.py <production-url>`.
 - [ ] Lighthouse mobile scores are recorded for the landing and Today pages: performance >= 90,

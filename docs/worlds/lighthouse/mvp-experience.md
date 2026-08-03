@@ -2,7 +2,7 @@
 
 Status: implementation ready<br>
 Owner: product<br>
-Last revised: 2026-08-02
+Last revised: 2026-08-03
 
 ## Product promise
 
@@ -43,8 +43,10 @@ Every visitor-facing page uses the following hierarchy:
 3. **Orientation:** time, place, participants, and whether information is rumor or established.
 4. **Primary action:** continue, ask, visit, or read the next episode; only one emphasized action.
 5. **Supporting context:** character cards, location notes, provenance, and prior episodes.
-6. **Global navigation:** Before entry, Today, Town, and Archive. After entry, Today, Town, People,
-   and Archive in that order. Today returns to the current published story state.
+6. **Global navigation:** Before entry, the public navigation is **Today · Town · Archive**. People
+   must be hidden because it contains visitor-specific notes. During an entered active visit, every
+   core page must show **Today · Town · People · Archive** in that order. Today returns to the
+   current published story state.
 
 Persistent chrome must not reveal protected information. The current day is public; clue counts,
 secret progress bars, and completion percentages are not.
@@ -52,19 +54,35 @@ secret progress bars, and completion percentages are not.
 ### Navigation and season lifecycle contract
 
 Navigation expresses stable capabilities rather than the amount of content currently available.
-Character presence never hides People, and episode count never hides Archive.
+During an entered active visit, public presence, private reachability, encounter count, episode
+count, and transient errors must change page content or actions, never the four global destinations.
+The public Archive and private People ledger are separate capabilities: Archive contains immutable,
+published story updates visible to everyone, while People contains notes and conversation history
+isolated to one browser-local visitor and season.
 
-| Visitor and season state | Primary navigation | Archive | People and contact |
+| Visitor and season state | Global navigation | Archive contract | People and contact contract |
 | --- | --- | --- | --- |
-| Active season, before entry | Today · Town · Archive | Public, including the truthful empty state | Hidden; rendering chrome creates no visitor ledger |
-| Active entered visit | Today · Town · People · Archive | Public and season-scoped | Visitor-scoped; contact follows current character availability |
-| Paused or completed selected season | Today · Town · People · Archive | Published episodes remain immutable and readable | The owning visitor's ledger remains readable; new contact is disabled |
-| Between seasons, published history exists | Archive is the only enabled capability | The newest published season is selected deterministically, with links to other published seasons | Hidden until a visitor restores a season-scoped context |
-| Between seasons, no published history | No available-looking destination | Honest empty state; never a 503 or dead link | Hidden |
+| Active season, before entry | Today · Town · Archive | Public and season-scoped; zero episodes uses the truthful empty state | Hidden; rendering public chrome must not create a visitor ledger or cookie |
+| Active entered visit, published episodes | Today · Town · People · Archive | Public and season-scoped | The visitor's complete season ledger is visible; contact follows each character's private reachability |
+| Active entered visit, zero publications | Today · Town · People · Archive | Visible and returns HTTP 200 with “No episodes published yet” | Visible even with zero encounters or notes; eligible contact remains available |
+| Active entered visit, quiet town or no public presence | Today · Town · People · Archive | Visible; the last committed public content or truthful empty state remains readable | Visible for every authored person; public absence must not imply private unreachability |
+| Paused selected season and returning visitor | Today · Town · People · Archive | Committed public episodes remain readable and immutable | The owning visitor's ledger remains readable; contact actions must state and enforce the paused-season rule |
+| Completed selected season and returning visitor | Today · Town · People · Archive | The completed public record remains readable and immutable | The owning visitor's ledger is read-only; new contact is disabled |
+| Between seasons, published history exists | Archive is the only public enabled capability until a season context is restored | Select the newest eligible published season deterministically and link to other published seasons without exposing internal IDs | Hidden publicly; available only after selecting a season and restoring that visitor's season-scoped context, then read-only where the lifecycle requires it |
+| Between seasons, no published history | No available-looking story destination | Render an honest no-history state; never a 503, dead link, or claim that published history exists | Hidden |
 
-Every core route marks exactly one section with `aria-current="page"`. Player-facing labels use
-“season”; run IDs and run lifecycle terms remain implementation details. Opening or selecting an
-Archive does not advance the simulation, mark an episode read, or alter conversations.
+Every core route must mark exactly one section with `aria-current="page"`. Global navigation is
+secondary chrome, not a page-specific primary action: each page must retain exactly one emphasized
+continue, ask, visit, or read action. Player-facing labels use “season”; internal run IDs, UUIDs, and
+run lifecycle terms must not appear. Opening or selecting Archive or a historical People ledger must
+not advance the simulation, mark an episode read, alter conversations, cross visitor boundaries, or
+reveal unpublished content.
+
+This contract follows [SIX-104's player-language policy](https://linear.app/six-wands-studios/issue/SIX-104/add-persistent-lighthouse-help-and-standardize-player-facing-terms): player-facing copy must
+prefer **Town map**, **People** or **your visit notes**, **private contact/conversation**, and **story
+panel**. If **dispatch** describes content rather than Greyhaven's Dispatch Office, its first or
+adjacent explanation must say that it is a published story update visible to everyone. All four
+destinations must remain spoiler-safe and preserve visitor isolation.
 
 ## Visitor model
 
@@ -132,6 +150,9 @@ skip is confirmed.
    and state: **Open**, **Quiet**, or **Unavailable until later**. It never names undiscovered evidence.
 3. Selecting a location opens its page with a scene-setting panel, visible characters, public facts,
    and available actions. The primary action is either **Speak with [character]** or **Observe**.
+   Every visible character name links to that person's profile. The global **People** destination
+   also opens the full visitor-scoped ledger directly, including people not currently present and
+   people for whom this visitor has no encounter notes yet.
 4. Observing may reveal an authored public detail or schedule a future conversational angle. It may
    not search private spaces, acquire evidence, or cause a canon event unless a story beat explicitly
    authorizes that outcome.
@@ -156,9 +177,16 @@ skip is confirmed.
    provenance is itself visitor-visible. It must not expose hidden reasoning or protected facts.
 6. After the daily conversation allowance is exhausted, the character remains readable and says
    when another exchange may become available. No payment, countdown pressure, or retry loophole.
+7. Character profiles, contact choosers, and conversations retain the four global destinations.
+   Their local recovery path must return to the character profile or People ledger, with **Back to
+   town** available when the visitor arrived through a location. A quiet, delayed, asynchronous,
+   unavailable, paused, or completed contact state must preserve prior readable notes and explain
+   the next valid action; it must not strand the visitor or infer private reachability from public
+   presence.
 
 **Completion:** a response is committed once and can be reopened from the current episode or the
-character's public conversation history. Refreshing must not create a second response.
+visitor's private conversation history for that character. Refreshing must not create a second
+response.
 
 ### 5. Daily recap
 
@@ -184,6 +212,7 @@ disprove its contemporary rumors. Later annotations may link to corrections; his
 
 1. `/lighthouse/archive` groups episodes by story day, newest day first, while listing episodes in
    chronological order within each day.
+   It is a public entry point and must not require or create a visitor ledger merely to render.
 2. Each entry includes title, day/time, location, a spoiler-safe dek, reading status, and approximate
    reading time. Unpublished episodes do not appear as locked placeholders.
 3. Filters are limited to **All**, **Unread**, and character. Results remain server-rendered and
@@ -191,6 +220,11 @@ disprove its contemporary rumors. Later annotations may link to corrections; his
 4. Episode pages have stable canonical URLs, Previous/Next links, and a **Back to now** action. Shared
    URLs include enough premise context for a new visitor without forcing onboarding.
 5. Archive search, downloads, bookmarks, and user annotations are excluded from launch.
+6. An active season with no published episode returns HTTP 200 and says **No episodes published
+   yet**. When no season is progressing, eligible committed history remains public: the newest
+   published season is selected deterministically and other eligible seasons are offered with
+   player-facing labels. With no published history, the response distinguishes that absence from an
+   intermission and provides no dead or available-looking Archive link.
 
 **Completion:** the visitor can locate and read any published episode without changing simulation
 state beyond their personal read marker.
@@ -224,14 +258,16 @@ never "choose what happens."
 
 Wireframes show information order, not final visual styling. Desktop keeps the reading column at a
 comfortable width and may place supporting context beside it; the DOM and focus order remain the
-mobile order.
+mobile order. Every wireframe below represents an entered active visit, so its global navigation is
+the required **Today · Town · People · Archive** set; pre-entry and lifecycle variants follow the
+[navigation and season lifecycle contract](#navigation-and-season-lifecycle-contract).
 
 ### Current story / returning visit
 
 ```text
 ┌──────────────────────────────┐
 │ THE LIGHTHOUSE       Day 4   │
-│ Story    Town    Archive     │
+│ Today  Town  People  Archive │
 ├──────────────────────────────┤
 │ SINCE YOU WERE AWAY          │
 │ 2 new episodes · 18 hours    │
@@ -253,7 +289,7 @@ mobile order.
 
 ```text
 ┌──────────────────────────────┐
-│ ← Story       GREYHAVEN      │
+│ ← Today       GREYHAVEN      │
 │ Day 4 · Afternoon            │
 ├──────────────────────────────┤
 │ Where will you look?         │
@@ -269,7 +305,7 @@ mobile order.
 │ │ June has stepped away.   │ │
 │ └──────────────────────────┘ │
 │                              │
-│ Story    Town    Archive     │
+│ Today  Town  People  Archive │
 └──────────────────────────────┘
 ```
 
@@ -292,6 +328,7 @@ mobile order.
 │ [ Why was the light dark?  ] │
 │                              │
 │ Why am I seeing this?        │
+│ Today  Town  People  Archive │
 └──────────────────────────────┘
 ```
 
@@ -315,7 +352,7 @@ mobile order.
 │ Who changed the record?      │
 │                              │
 │ [ Read the next episode ]    │
-│ Story    Town    Archive     │
+│ Today  Town  People  Archive │
 └──────────────────────────────┘
 ```
 
@@ -329,6 +366,7 @@ the whole viewport with a spinner.
 | Current story | "Greyhaven is quiet for now" with last published timestamp and **Explore town** | Existing content stays visible; new navigation uses normal document loading | Show last committed episode, "The latest scene could not be reached," **Try again**, and Archive |
 | Since you were away | No new episodes resumes saved position; missing marker offers **Start from Episode 1** or **Go to now** | Skeletons match recap headings and reserve image space; text alternative says "Loading recap" | Do not advance last-seen marker; offer **Read archive** and **Try again** |
 | Town | "No one is available here yet" plus open locations | Location card retains name and dimensions; no pulsing map | Preserve last known availability, mark it "May be out of date," and offer refresh |
+| People | Show every authored person with an honest “No visit notes yet” state; do not filter by presence, reachability, or encounters | Preserve names and ledger structure; do not expose another visitor's cached notes | Keep prior visitor-scoped notes readable, explain whether contact is delayed, unavailable, or read-only, and offer People or Town recovery |
 | Conversation | "[Character] has nothing more to add today" with conversation history | After submit, lock only the selected form, announce "Asking…", and keep the exchange visible | Keep the chosen question, announce failure, allow a safe retry with the same idempotency key; never display a fabricated reply |
 | Daily recap | Before day close: "Day {n} is still unfolding" and **Back to story** | Render headings and fixed-ratio panel placeholders | Link to the day's episodes; label recap unavailable rather than inferring one |
 | Archive | "No episodes published yet"; active seasons remain selectable without entry | Render day headings and stable entry placeholders | Keep any committed entries, say results may be incomplete, and offer retry |
@@ -345,6 +383,9 @@ The MVP targets WCAG 2.2 AA for all core journeys.
   native buttons/links/forms. Reading and focus order follow the visual story order.
 - Provide a skip link and visible focus indicators. All actions work by keyboard; no drag, swipe,
   hover, long-press, or map position is required.
+- The four-item active-visit global navigation must remain in DOM and focus order as **Today · Town
+  · People · Archive**, expose an accessible navigation name, mark exactly one destination with
+  `aria-current="page"`, and never use color alone to identify the current destination.
 - Interactive targets are at least 44 by 44 CSS pixels with adequate spacing. The experience works
   at 320 CSS pixels and at 200% browser zoom without two-dimensional scrolling.
 - Text and meaningful controls meet 4.5:1 contrast (3:1 for large text and graphical controls).
@@ -363,7 +404,8 @@ The MVP targets WCAG 2.2 AA for all core journeys.
 
 Accessibility acceptance uses keyboard-only review, VoiceOver/Safari and NVDA/Firefox smoke tests,
 automated checks, 200% zoom, reduced motion, and forced-colors/high-contrast review across all six
-core journeys and every shared state.
+core journeys and every shared state. The automated coverage allocation is defined in the
+[test strategy](../../testing.md#lighthouse-navigation-and-lifecycle-contract).
 
 ## Measurement and MVP success signals
 
@@ -410,6 +452,9 @@ and are not used to manipulate story canon.
 
 - [ ] First visit, returning visit, town, conversation, recap, and archive meet the journey completion
   definitions at 320 px, desktop width, keyboard-only, and 200% zoom.
+- [ ] Every entered active-visit route exposes **Today · Town · People · Archive** in order, remains
+  usable at 320 CSS pixels and 200% zoom, and marks exactly one destination with
+  `aria-current="page"`; pre-entry and between-season routes match the lifecycle table.
 - [ ] All page, empty, pending, illustration-failure, request-failure, and retry states have been
   exercised with JavaScript enabled and disabled where the action can degrade gracefully.
 - [ ] Conversation retries commit at most one response and never show uncommitted generated content.

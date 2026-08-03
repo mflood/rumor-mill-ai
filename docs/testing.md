@@ -30,3 +30,22 @@ network access.
 The tests use fixed seeds and controlled clocks. Each database-backed test receives a unique path
 from pytest's temporary directory, so xdist workers never share SQLite files. The optional Postgres
 test requires `RUMOR_MILL_TEST_DATABASE_URL` and should point to an isolated disposable database.
+
+## Lighthouse navigation and lifecycle contract
+
+The canonical product behavior is the Lighthouse experience specification's
+[navigation and season lifecycle contract](worlds/lighthouse/mvp-experience.md#navigation-and-season-lifecycle-contract).
+Navigation assertions are deterministic release requirements, not substitutes for manual visual
+review. Coverage must be assigned as follows:
+
+| Test layer | Required deterministic assertions |
+| --- | --- |
+| Unit | The shared navigation policy produces **Today · Town · Archive** before entry and **Today · Town · People · Archive** for an entered active visit; route-to-section mapping selects exactly one current destination; visibility is independent of public presence, private reachability, encounter count, and episode count; player-facing labels never expose internal run IDs or run terminology. |
+| Integration | Server-rendered Today, Town/location, People/profile, contact/conversation, Archive/episode, and their empty, quiet, stale, and error variants contain the exact ordered labels and season-scoped hrefs, with one correct `aria-current="page"`. The lifecycle matrix covers pre-entry, active with publications, active with zero publications, quiet/no-presence, paused, completed, between seasons with history, and between seasons without history. Archive access and empty states remain public; People remains visitor-scoped; cross-visitor and malformed-season requests fail safely; navigation reads do not mutate simulation, read markers, visitor notes, or conversations. |
+| End to end | A new visitor enters, moves through all four destinations without JavaScript, follows Town → person → profile/conversation and People → profile paths, returns to Archive, and preserves the same visitor and selected season. A returning visitor can read their own paused/completed ledger and published history without gaining contact actions or seeing another visitor's data. |
+| Deployment smoke | Over HTTPS, the public landing exposes Archive but not People before entry; a seeded entered visit renders all four ordered destinations; Archive returns a truthful HTTP 200 empty or published state; links resolve without raw IDs in visible text; keyboard traversal, the accessible navigation name, `aria-current`, 320 CSS pixel layout, and 200% zoom receive release evidence. Smoke checks verify routing and rendered semantics only, not hidden story state. |
+
+The unit and integration lanes own exhaustive state combinations. End-to-end coverage proves the
+journey and isolation boundaries, while deployment smoke catches production routing, asset, and
+responsive regressions. A manual launch pass may supplement these lanes but must not be the only
+evidence for navigation order, lifecycle access, spoiler safety, or visitor isolation.
