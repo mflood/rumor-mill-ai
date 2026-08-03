@@ -652,9 +652,12 @@ def test_deployment_smoke_checks_health_assets_and_public_pages() -> None:
             body = b"Share feedback on GitHub"
         elif url.endswith("/lighthouse/session"):
             return FakeResponse(
-                b'property="og:title" href="/lighthouse/runs/123/town/harbor"',
+                b'property="og:title" data-primary-recommendation="true" '
+                b'href="/lighthouse/runs/123/town/harbor"',
                 url="https://rumor.example/lighthouse/today",
             )
+        elif url.endswith("/lighthouse/runs/123/town/harbor"):
+            body = b'data-playable-action="observe"'
         elif "/lighthouse" in url:
             body = b'property="og:title"'
         else:
@@ -689,7 +692,10 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
         response(200, b"Share feedback on GitHub"),
     ]
     ready = response(200, b'{"status":"ok","components":{"story_pipeline":"ok"}}')
-    playable_today = b'property="og:title" href="/lighthouse/runs/123/town/harbor"'
+    playable_today = (
+        b'property="og:title" data-primary-recommendation="true" '
+        b'href="/lighthouse/runs/123/town/harbor"'
+    )
     for responses, message in (
         ([response(503, b"{}")], "/health/live returned HTTP 503"),
         ([response(200, b'{"status":"degraded"}')], "/health/live reported degraded"),
@@ -733,13 +739,21 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
                 *healthy_prefix,
                 FakeResponse(b'property="og:title"', url="https://rumor.example/lighthouse/today"),
             ],
-            "/lighthouse/today exposed no location or character destination",
+            "/lighthouse/today exposed no primary playable recommendation",
         ),
         (
             [
                 *healthy_prefix,
                 FakeResponse(playable_today, url="https://rumor.example/lighthouse/today"),
                 response(503, b""),
+            ],
+            "/lighthouse/runs/123/town/harbor playable destination smoke check failed",
+        ),
+        (
+            [
+                *healthy_prefix,
+                FakeResponse(playable_today, url="https://rumor.example/lighthouse/today"),
+                response(200, b"quiet but not actionable"),
             ],
             "/lighthouse/runs/123/town/harbor playable destination smoke check failed",
         ),
