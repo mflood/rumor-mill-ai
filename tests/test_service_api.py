@@ -32,6 +32,7 @@ from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.config import Settings
 from rumor_mill.engine.conversation import CharacterConversationEngine
 from rumor_mill.engine.ports import ProviderError, ProviderRateLimitError, ProviderTimeoutError
+from rumor_mill.engine.recap import RecapSource, build_daily_recap
 from rumor_mill.main import create_app
 
 ROOT = Path(__file__).parents[1]
@@ -1004,6 +1005,100 @@ def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type:
     forgotten = client.post("/lighthouse/session/reset", follow_redirects=False)
     assert forgotten.status_code == 303
     assert forgotten.headers["location"] == "/lighthouse"
+
+
+def test_today_presents_one_accessible_current_story_state(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    entered = client.post("/lighthouse/session", follow_redirects=False)
+    assert entered.status_code == 303
+
+    quiet = client.get("/lighthouse/today")
+    assert quiet.text.count('role="status"') == 1
+    assert quiet.text.count("Active now") == 1
+    assert "No new public scenes" in quiet.text
+    assert "Today’s dispatch could not be prepared" not in quiet.text
+    assert "Since your last visit" not in quiet.text
+    assert "How updates work" in quiet.text
+    assert "Your progress and private conversations are safe" in quiet.text
+    assert "Explore the town" in quiet.text
+
+    now = datetime.now(UTC)
+    recap = build_daily_recap(
+        now.date(),
+        [
+            RecapSource(
+                id=uuid4(),
+                kind="story_card",
+                title="A bell rings at the market",
+                body="Ada hears the archive bell.",
+                generated_at=now,
+                location_id="market",
+                character_id="ada",
+            )
+        ],
+    )
+    with factory() as database:
+        visitor = database.scalar(select(VisitorModel).where(VisitorModel.active_run_id == run_id))
+        assert visitor is not None
+        visitor.last_seen_at = now + timedelta(minutes=1)
+        database.add(
+            ArtifactModel(
+                run_id=run_id,
+                kind="daily_recap",
+                title=recap.headline,
+                body=recap.dek,
+                generated_at=now,
+                source_ids=[],
+                payload=recap.artifact_payload(),
+            )
+        )
+        database.commit()
+
+    scenes = client.get("/lighthouse/today")
+    assert scenes.text.count('role="status"') == 1
+    assert "New public scenes" in scenes.text
+    assert "Read today’s scenes" in scenes.text
+    assert "No new public scenes" not in scenes.text
+    assert "Since your last visit" not in scenes.text
+
+    with factory() as database:
+        visitor = database.scalar(select(VisitorModel).where(VisitorModel.active_run_id == run_id))
+        assert visitor is not None
+        visitor.last_seen_at = now - timedelta(minutes=1)
+        database.commit()
+
+    returned = client.get("/lighthouse/today")
+    assert returned.text.count('role="status"') == 1
+    assert "Since your last visit" in returned.text
+    assert "1 new public scene has been published" in returned.text
+    assert "Read the new scenes" in returned.text
+    assert "No new public scenes" not in returned.text
+
+    with factory() as database:
+        database.add(
+            JobModel(
+                run_id=run_id,
+                idempotency_key=f"run:{run_id}:beat:failed-dispatch",
+                kind="lighthouse_story",
+                status="dead",
+                scheduled_at=now + timedelta(minutes=2),
+                available_at=now + timedelta(minutes=2),
+                attempts=5,
+                max_attempts=5,
+                payload={"story_kind": "beat", "id": "failed-dispatch"},
+                error="safe failure summary",
+            )
+        )
+        database.commit()
+
+    failed = client.get("/lighthouse/today")
+    assert failed.text.count('role="status"') == 1
+    assert "Today’s dispatch could not be prepared" in failed.text
+    assert "Read the previous dispatch" in failed.text
+    assert "Your progress and private conversations are safe" in failed.text
+    assert "No new public scenes" not in failed.text
+    assert "Since your last visit" not in failed.text
 
 
 def test_browser_security_controls_and_session_rotation(api) -> None:  # type: ignore[no-untyped-def]

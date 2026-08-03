@@ -57,6 +57,7 @@ from rumor_mill.engine.conversation import (
     VisitorRelationship,
 )
 from rumor_mill.engine.domain import CharacterId, ClaimId, LocationId, MemoryId
+from rumor_mill.engine.lighthouse_pipeline import LIGHTHOUSE_STORY_JOB
 from rumor_mill.engine.ports import (
     ClockMode,
     ProviderError,
@@ -614,7 +615,7 @@ def create_app(
         simulation_time = run.simulation_time or run.started_at
         return f"Day {run_story_day(run)} · {simulation_time.strftime('%H:%M')}"
 
-    def latest_published_recap(database: Session, run_id: UUID) -> DailyRecap | None:
+    def latest_published_recap_artifact(database: Session, run_id: UUID) -> ArtifactModel | None:
         artifacts = database.scalars(
             select(ArtifactModel)
             .where(ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap")
@@ -625,8 +626,77 @@ def create_app(
                 artifact.payload.get("visibility", "public") == "public"
                 and "recap" in artifact.payload
             ):
-                return DailyRecap.model_validate(artifact.payload["recap"])
+                return artifact
         return None
+
+    def current_story_state(
+        database: Session,
+        run: RunRecord,
+        visitor: VisitorModel,
+        recap_artifact: ArtifactModel | None,
+    ) -> str:
+        recap = (
+            DailyRecap.model_validate(recap_artifact.payload["recap"])
+            if recap_artifact is not None
+            else None
+        )
+        latest_failure = database.scalar(
+            select(JobModel)
+            .where(
+                JobModel.run_id == run.id,
+                JobModel.kind == LIGHTHOUSE_STORY_JOB,
+                JobModel.status.in_(("failed", "dead")),
+            )
+            .order_by(JobModel.scheduled_at.desc(), JobModel.created_at.desc())
+            .limit(1)
+        )
+        failure_is_current = latest_failure is not None and (
+            recap_artifact is None
+            or _aware(latest_failure.scheduled_at) > _aware(recap_artifact.generated_at)
+        )
+
+        if failure_is_current:
+            title = "Today’s dispatch could not be prepared"
+            body = (
+                "The latest public story update did not finish. Your progress and private "
+                "conversations are safe. Read the previous dispatch now, then return later."
+            )
+            action = "Read the previous dispatch"
+            href = f"/lighthouse/runs/{run.id}/archive"
+        elif recap_artifact is not None and _aware(recap_artifact.generated_at) > _aware(
+            visitor.last_seen_at
+        ):
+            title = "Since your last visit"
+            body = (
+                f"{len(recap.panels)} new public "
+                f"{'scene has' if len(recap.panels) == 1 else 'scenes have'} been published. "
+                "Your saved progress and private conversations are safe. Start with the newest "
+                "dispatch below."
+            )
+            action = "Read the new scenes"
+            href = "#recap-heading"
+        elif recap is not None and recap.panels:
+            title = "New public scenes"
+            body = (
+                f"Today’s dispatch contains {len(recap.panels)} public "
+                f"{'scene' if len(recap.panels) == 1 else 'scenes'}. Your saved progress and "
+                "private conversations are safe. Read the dispatch, then follow a thread."
+            )
+            action = "Read today’s scenes"
+            href = "#recap-heading"
+        else:
+            title = "No new public scenes"
+            body = (
+                "Greyhaven has not published a new public scene yet. Your progress and private "
+                "conversations are safe. Revisit the last known places or return later."
+            )
+            action = "Explore the town"
+            href = f"/lighthouse/runs/{run.id}/town"
+
+        return f'''<section class="story-state" aria-labelledby="current-state-heading">
+        <div><p class="eyebrow">Current story status</p><h2 id="current-state-heading">{escape(title)}</h2></div>
+        <div><div class="story-state__current" role="status" aria-live="polite" aria-atomic="true"><p class="eyebrow">Active now</p><p>{escape(body)}</p><a class="primary-action" href="{escape(href)}">{escape(action)} <span aria-hidden="true">→</span></a></div><details><summary>How updates work</summary><p>The Lighthouse shows one current status here. Public dispatches may change while you are away; your conversations remain private and saved to this visit.</p></details></div>
+      </section>'''
 
     def load_run(run_id: UUID) -> tuple[RunRecord, WorldDefinition]:
         with uow_factory() as unit_of_work:
@@ -818,8 +888,13 @@ def create_app(
         token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
     ) -> Response:
         """Render the latest spoiler-safe daily briefing without requiring JavaScript."""
-        run_model = active_story(database, token)
-        if run_model is None:
+        visitor = optional_visitor(database, token)
+        run_model = (
+            database.get(RunModel, visitor.active_run_id)
+            if visitor is not None and visitor.active_run_id is not None
+            else None
+        )
+        if run_model is None or run_model.status != RunStatus.RUNNING:
             return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         run, world = load_run(run_model.id)
         harbor = next(
@@ -840,7 +915,12 @@ def create_app(
         document = (web_root / "today.html").read_text(encoding="utf-8")
         live_label = escape(live_clock_label(run))
         document = document.replace('Day 1 <span aria-hidden="true">·</span> Night', live_label)
-        latest_recap = latest_published_recap(database, run.id)
+        recap_artifact = latest_published_recap_artifact(database, run.id)
+        latest_recap = (
+            DailyRecap.model_validate(recap_artifact.payload["recap"])
+            if recap_artifact is not None
+            else None
+        )
         dispatch_day = (
             max(1, min(14, (latest_recap.story_date - run.started_at.date()).days + 1))
             if latest_recap is not None
@@ -860,6 +940,12 @@ def create_app(
         for old, new in replacements.items():
             document = document.replace(old, new)
         document = document.replace("Mae Bell", escape(character.name))
+        document = document.replace(
+            "<!-- CURRENT_STORY_STATE -->",
+            current_story_state(database, run, visitor, recap_artifact),
+        )
+        visitor.last_seen_at = datetime.now(UTC)
+        database.commit()
         return HTMLResponse(document)
 
     @app.get("/lighthouse/town", response_class=HTMLResponse, include_in_schema=False)
