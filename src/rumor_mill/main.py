@@ -4,7 +4,7 @@
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from hmac import compare_digest
 from hmac import new as hmac_new
@@ -67,7 +67,8 @@ from rumor_mill.engine.ports import (
     RunStatus,
     WorldRecord,
 )
-from rumor_mill.engine.recap import DailyRecap, RecapPanel, RecapSource, build_daily_recap
+from rumor_mill.engine.recap import PUBLIC_RECAP_SOURCE_KINDS, DailyRecap, RecapPanel
+from rumor_mill.engine.recap_publication import DAILY_RECAP_JOB, publish_daily_recap
 from rumor_mill.engine.scheduling import SimulationScheduler
 from rumor_mill.observability import (
     MetricsRegistry,
@@ -247,6 +248,7 @@ class EpisodeResponse(ApiModel):
 
 class GenerateRecapRequest(ApiModel):
     force: bool = False
+    story_date: date | None = None
 
 
 class EditRecapRequest(ApiModel):
@@ -635,18 +637,29 @@ def create_app(
         return f"Day {run_story_day(run)} · {simulation_time.strftime('%H:%M')}"
 
     def latest_published_recap_artifact(database: Session, run_id: UUID) -> ArtifactModel | None:
-        artifacts = database.scalars(
-            select(ArtifactModel)
-            .where(ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap")
-            .order_by(ArtifactModel.generated_at.desc(), ArtifactModel.id.desc())
+        artifacts = list(
+            database.scalars(
+                select(ArtifactModel).where(
+                    ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap"
+                )
+            )
         )
+        valid: list[tuple[date, ArtifactModel]] = []
         for artifact in artifacts:
             if (
                 artifact.payload.get("visibility", "public") == "public"
+                and artifact.payload.get("canonical", True)
                 and "recap" in artifact.payload
             ):
-                return artifact
-        return None
+                recap = validated_recap(artifact)
+                if recap is not None:
+                    valid.append((recap.story_date, artifact))
+        latest = max(
+            valid,
+            key=lambda item: (item[0], str(item[1].id)),
+            default=None,
+        )
+        return latest[1] if latest is not None else None
 
     def current_story_state(
         database: Session,
@@ -742,6 +755,7 @@ def create_app(
             "database": "ok",
             "worker": "ok",
             "story_pipeline": "ok",
+            "recap_pipeline": "ok",
             "provider": "ok",
         }
         try:
@@ -764,9 +778,11 @@ def create_app(
                 if settings.environment == "production":
                     components["worker"] = "degraded"
                     components["story_pipeline"] = "degraded"
+                    components["recap_pipeline"] = "degraded"
             elif _aware(last_heartbeat) < stale_before:
                 components["worker"] = "degraded"
                 components["story_pipeline"] = "degraded"
+                components["recap_pipeline"] = "degraded"
             operational_pipeline = database.scalar(
                 select(WorkerHeartbeatModel)
                 .where(
@@ -778,6 +794,7 @@ def create_app(
             )
             if operational_pipeline is None and settings.environment == "production":
                 components["story_pipeline"] = "degraded"
+                components["recap_pipeline"] = "degraded"
             elif operational_pipeline is not None:
                 pipeline_stale_before = datetime.now(UTC) - timedelta(
                     seconds=settings.story_pipeline_stale_after_seconds
@@ -804,10 +821,27 @@ def create_app(
                 )
                 if clock_stalled or overdue_job is not None:
                     components["story_pipeline"] = "degraded"
+                recap_failure = database.scalar(
+                    select(JobModel.id)
+                    .where(
+                        JobModel.kind == DAILY_RECAP_JOB,
+                        (
+                            (JobModel.status == "dead")
+                            | (
+                                (JobModel.status == "failed")
+                                & (JobModel.available_at < pipeline_stale_before)
+                            )
+                        ),
+                    )
+                    .limit(1)
+                )
+                if recap_failure is not None:
+                    components["recap_pipeline"] = "degraded"
         except Exception:  # pragma: no cover - requires a runtime database outage
             components["database"] = "degraded"
             components["worker"] = "degraded"
             components["story_pipeline"] = "degraded"
+            components["recap_pipeline"] = "degraded"
         if settings.provider_health_required and (
             settings.model_provider == "openai" and settings.openai_api_key is None
         ):
@@ -870,6 +904,15 @@ def create_app(
             .where(JobModel.status.in_(("pending", "failed")))
         )
         metrics.set("story_queue_depth", float(queue_depth or 0))
+        recap_queue_depth = database.scalar(
+            select(func.count())
+            .select_from(JobModel)
+            .where(
+                JobModel.kind == DAILY_RECAP_JOB,
+                JobModel.status.in_(("pending", "failed", "running")),
+            )
+        )
+        metrics.set("recap_queue_depth", float(recap_queue_depth or 0))
         pipeline_stale_before = now - timedelta(seconds=settings.story_pipeline_stale_after_seconds)
         recent_progress = database.scalar(
             select(WorkerHeartbeatModel.worker_id)
@@ -1293,6 +1336,11 @@ def create_app(
             f"<small>Last clock advancement: {progress_time(pipeline.last_clock_advanced_at)}"
             f"<br>Last job enqueue: {progress_time(pipeline.last_story_job_enqueued_at)}"
             f"<br>Last job completion: {progress_time(pipeline.last_story_job_completed_at)}"
+            f"<br>Story queue depth: {pipeline.story_queue_depth}"
+            f"<br>Last recap enqueue: {progress_time(pipeline.last_recap_job_enqueued_at)}"
+            f"<br>Last recap completion: {progress_time(pipeline.last_recap_job_completed_at)}"
+            f"<br>Last recap failure: {progress_time(pipeline.last_recap_job_failed_at)}"
+            f"<br>Recap queue depth: {pipeline.recap_queue_depth}"
             f"<br>Queue depth: {queue_depth}</small>"
             if pipeline is not None
             else f"<small>Queue depth: {queue_depth}</small>"
@@ -1335,6 +1383,47 @@ def create_app(
                 .order_by(ArtifactModel.generated_at.desc())
             )
         )
+        public_source_dates = {
+            _aware(item.generated_at).date()
+            for item in database.scalars(
+                select(ArtifactModel).where(
+                    ArtifactModel.run_id == run_id,
+                    ArtifactModel.kind.in_(PUBLIC_RECAP_SOURCE_KINDS),
+                )
+            )
+            if item.payload.get("visibility", "public") == "public"
+        }
+        published_dates = {
+            DailyRecap.model_validate(item.payload["recap"]).story_date
+            for item in recaps
+            if item.payload.get("visibility", "public") == "public" and "recap" in item.payload
+        }
+        current_story_date = _aware(run.simulation_time).date()
+        closed_source_dates = {
+            item
+            for item in public_source_dates
+            if item < current_story_date
+            or (run.status == RunStatus.COMPLETED.value and item <= current_story_date)
+        }
+        awaiting_dates = sorted(closed_source_dates - published_dates)
+        recap_jobs = list(
+            database.scalars(
+                select(JobModel).where(
+                    JobModel.run_id == run_id,
+                    JobModel.kind == DAILY_RECAP_JOB,
+                )
+            )
+        )
+        if not public_source_dates:
+            recap_status = "No public source content yet."
+        elif awaiting_dates and any(job.status in ("failed", "dead") for job in recap_jobs):
+            recap_status = f"Publication failed for {awaiting_dates[0].isoformat()}; retry the recap job below."
+        elif awaiting_dates:
+            recap_status = f"{len(awaiting_dates)} closed story date(s) awaiting publication; oldest is {awaiting_dates[0].isoformat()}."
+        else:
+            recap_status = (
+                "Archive fully caught up for every closed story date with public content."
+            )
         job_rows = (
             "".join(
                 f"""<tr><td>{escape(job.kind)}</td><td>{escape(job.status)}</td><td>{job.attempts}/{job.max_attempts}</td><td>{escape((job.error or "No error recorded")[:240])}</td><td>{f'<form class="inline" action="/operator/console/jobs/{job.id}/retry" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm</label><button>Retry</button></form>' if job.status == "failed" and job.attempts < job.max_attempts else "Not eligible"}</td></tr>"""
@@ -1357,7 +1446,7 @@ def create_app(
             or '<tr><td colspan="3">No recaps.</td></tr>'
         )
         notice = f'<p class="notice">{escape(message)}</p>' if message else ""
-        body = f"""<p><a href="/operator/console">← All runs</a></p><h1>Run recovery</h1><p><code>{run.id}</code></p>{notice}<section><h2>Simulation</h2><p>Status: <strong>{escape(run.status)}</strong> · Clock: {escape(run.clock_mode)} · {_aware(run.simulation_time).isoformat()}</p><form class="inline" action="/operator/console/runs/{run.id}/{"pause" if run.status == "running" else "resume"}" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm state change</label><button>{"Pause" if run.status == "running" else "Resume"}</button></form> <form class="inline" action="/operator/console/runs/{run.id}/advance" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm tick</label><button>Advance one tick</button></form></section><section><h2>Failed and dead jobs</h2><table><tr><th>Kind</th><th>State</th><th>Attempts</th><th>Safe error summary</th><th>Recovery</th></tr>{job_rows}</table></section><section><h2>Narrative reports</h2><table><tr><th>Category</th><th>Target</th><th>Diagnostic references</th><th>Review</th></tr>{report_rows}</table></section><section><h2>Daily recaps</h2><table><tr><th>Title</th><th>Publication</th><th>Action</th></tr>{recap_rows}</table></section>"""
+        body = f"""<p><a href="/operator/console">← All runs</a></p><h1>Run recovery</h1><p><code>{run.id}</code></p>{notice}<section><h2>Simulation</h2><p>Status: <strong>{escape(run.status)}</strong> · Clock: {escape(run.clock_mode)} · {_aware(run.simulation_time).isoformat()}</p><form class="inline" action="/operator/console/runs/{run.id}/{"pause" if run.status == "running" else "resume"}" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm state change</label><button>{"Pause" if run.status == "running" else "Resume"}</button></form> <form class="inline" action="/operator/console/runs/{run.id}/advance" method="post"><label><input type="checkbox" name="confirm" value="yes" required> Confirm tick</label><button>Advance one tick</button></form></section><section><h2>Recap pipeline</h2><p>{escape(recap_status)}</p></section><section><h2>Failed and dead jobs</h2><table><tr><th>Kind</th><th>State</th><th>Attempts</th><th>Safe error summary</th><th>Recovery</th></tr>{job_rows}</table></section><section><h2>Narrative reports</h2><table><tr><th>Category</th><th>Target</th><th>Diagnostic references</th><th>Review</th></tr>{report_rows}</table></section><section><h2>Daily recaps</h2><table><tr><th>Title</th><th>Publication</th><th>Action</th></tr>{recap_rows}</table></section>"""
         return operator_page("Run recovery", body)
 
     @app.get(
@@ -2188,7 +2277,7 @@ def create_app(
         return HTMLResponse(profile_shell(run, character.name, content))
 
     def published_recaps(database: Session, run_id: UUID) -> list[ArtifactModel]:
-        return [
+        recaps = [
             artifact
             for artifact in database.scalars(
                 select(ArtifactModel)
@@ -2196,12 +2285,61 @@ def create_app(
                 .order_by(ArtifactModel.generated_at, ArtifactModel.id)
             )
             if artifact.payload.get("visibility", "public") == "public"
+            and artifact.payload.get("canonical", True)
             and "recap" in artifact.payload
+            and validated_recap(artifact) is not None
         ]
+        return sorted(
+            recaps,
+            key=lambda item: (
+                DailyRecap.model_validate(item.payload["recap"]).story_date,
+                str(item.id),
+            ),
+        )
+
+    def archive_publication_message(
+        database: Session, run: RunRecord, recaps: list[ArtifactModel]
+    ) -> str:
+        source_dates = {
+            _aware(item.generated_at).date()
+            for item in database.scalars(
+                select(ArtifactModel).where(
+                    ArtifactModel.run_id == run.id,
+                    ArtifactModel.kind.in_(PUBLIC_RECAP_SOURCE_KINDS),
+                )
+            )
+            if item.payload.get("visibility", "public") == "public"
+        }
+        published_dates = {
+            DailyRecap.model_validate(item.payload["recap"]).story_date for item in recaps
+        }
+        current_date = (run.simulation_time or run.started_at).date()
+        awaiting = sorted(
+            item
+            for item in source_dates - published_dates
+            if item < current_date or (run.status is RunStatus.COMPLETED and item <= current_date)
+        )
+        recap_jobs = list(
+            database.scalars(
+                select(JobModel).where(
+                    JobModel.run_id == run.id,
+                    JobModel.kind == DAILY_RECAP_JOB,
+                )
+            )
+        )
+        if awaiting and any(item.status in ("failed", "dead") for item in recap_jobs):
+            return "A dispatch could not be published. The story operator has been notified and can retry it safely."
+        if awaiting and any(item.status in ("pending", "running") for item in recap_jobs):
+            return "A completed story day is being prepared for the archive now."
+        if awaiting:
+            return "A completed story day is awaiting publication. The story operator can inspect the recap pipeline."
+        if source_dates:
+            return "Today's public story is still unfolding. Its dispatch is published after the story day closes."
+        return "No public story dispatch has been filed yet."
 
     def story_so_far(recaps: list[ArtifactModel]) -> str:
         if not recaps:
-            return "No public dispatch has been published to the archive yet. Return later to read the first one."
+            return "No public dispatch has been published to the archive yet."
         summaries = [DailyRecap.model_validate(item.payload["recap"]).dek for item in recaps]
         return " ".join(summaries[-4:])
 
@@ -2246,7 +2384,7 @@ def create_app(
                 f"""<li class="episode-entry"><a href="/lighthouse/runs/{run.id}/archive/{artifact.id}"><span class="episode-number">{index + 1:02}</span><span class="episode-entry__copy"><time datetime="{artifact.generated_at.isoformat()}">{recap.story_date.strftime("%B %d, %Y")}</time><strong>{escape(recap.headline)}</strong><span>{escape(recap.dek)}</span></span></a><details><summary>Panels in this episode</summary><ol>{panel_titles or "<li>No panels were published.</li>"}</ol></details></li>"""
             )
         empty = (
-            '<li class="archive-empty"><strong>The archive is waiting.</strong><span>No dispatch has been published yet. Your progress is safe; return later to read the first one.</span></li>'
+            f'<li class="archive-empty"><strong>The archive is waiting.</strong><span>{escape(archive_publication_message(database, run, recaps))}</span></li>'
             if not episode_items
             else ""
         )
@@ -2857,14 +2995,21 @@ def create_app(
     def cached_recap(database: Session, run_id: UUID, story_date: str) -> ArtifactModel | None:
         candidates = database.scalars(
             select(ArtifactModel)
-            .where(ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap")
+            .where(
+                ArtifactModel.run_id == run_id,
+                ArtifactModel.kind == "daily_recap",
+            )
             .order_by(ArtifactModel.generated_at.desc())
         )
         return next(
             (
                 item
                 for item in candidates
-                if item.payload.get("recap", {}).get("story_date") == story_date
+                if item.payload.get("canonical", True)
+                and (
+                    (item.story_date and item.story_date.isoformat() == story_date)
+                    or item.payload.get("recap", {}).get("story_date") == story_date
+                )
             ),
             None,
         )
@@ -2893,57 +3038,41 @@ def create_app(
     def generate_daily_recap(
         run_id: UUID,
         request: GenerateRecapRequest,
-        database: Annotated[Session, Depends(session)],
     ) -> DailyRecapResponse:
         run, _ = load_run(run_id)
-        story_date = (run.simulation_time or run.started_at).date()
-        existing = cached_recap(database, run_id, story_date.isoformat())
-        if existing is not None and not request.force:
-            return recap_response(existing)
-
-        models = list(
-            database.scalars(
-                select(ArtifactModel)
-                .where(
-                    ArtifactModel.run_id == run_id,
-                    ArtifactModel.kind != "daily_recap",
+        target_date = request.story_date or (run.simulation_time or run.started_at).date()
+        if target_date > (run.simulation_time or run.started_at).date():
+            raise HTTPException(status.HTTP_409_CONFLICT, "future story dates cannot be published")
+        with session_factory() as database:
+            existing = cached_recap(database, run_id, target_date.isoformat())
+            if existing is not None:
+                if request.force:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        "published recaps are immutable; retry without force",
+                    )
+                return recap_response(existing)
+        try:
+            with uow_factory() as unit_of_work:
+                publish_daily_recap(
+                    unit_of_work,
+                    run_id=run_id,
+                    story_date=target_date,
+                    published_at=datetime.now(UTC),
+                    allow_quiet=True,
                 )
-                .order_by(ArtifactModel.generated_at.desc())
-            )
-        )
-        sources = [
-            RecapSource(
-                id=item.id,
-                kind=item.kind,
-                title=item.title,
-                body=item.body,
-                generated_at=_aware(item.generated_at),
-                visibility=item.payload.get("visibility", "public"),
-                importance=item.payload.get("importance", 1),
-                location_id=item.payload.get("location_id"),
-                character_id=item.payload.get("character_id"),
-                active_thread=item.payload.get("active_thread"),
-            )
-            for item in models
-            if _aware(item.generated_at).date() == story_date
-        ]
-        recap = build_daily_recap(story_date, sources)
-        if existing is not None:
-            database.delete(existing)
-            database.flush()
-        model = ArtifactModel(
-            run_id=run_id,
-            kind="daily_recap",
-            title=recap.headline,
-            body=recap.dek,
-            generated_at=datetime.now(UTC),
-            source_ids=[str(panel.source_id) for panel in recap.panels],
-            payload=recap.artifact_payload(),
-        )
-        database.add(model)
-        database.commit()
-        database.refresh(model)
-        return recap_response(model)
+                unit_of_work.commit()
+        except IntegrityError:
+            # A concurrent worker or operator won the canonical database identity.
+            pass
+        with session_factory() as database:
+            model = cached_recap(database, run_id, target_date.isoformat())
+            if model is None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "recap publication did not produce a canonical artifact",
+                )
+            return recap_response(model)
 
     @app.patch(
         "/api/v1/recaps/{recap_id}",

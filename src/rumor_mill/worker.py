@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from threading import Event
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence import (
@@ -15,16 +16,21 @@ from rumor_mill.adapters.persistence import (
     create_session_factory,
 )
 from rumor_mill.adapters.persistence.llm_tracing import SqlAlchemyLlmTraceStore
-from rumor_mill.adapters.persistence.models import WorkerHeartbeatModel
+from rumor_mill.adapters.persistence.models import JobModel, WorkerHeartbeatModel
 from rumor_mill.adapters.providers import create_model_provider
 from rumor_mill.config import Settings, get_settings
-from rumor_mill.engine.jobs import DurableJobWorker
+from rumor_mill.engine.jobs import DurableJobWorker, JobHandler
 from rumor_mill.engine.lighthouse_pipeline import (
     LighthouseWorkSource,
     RoutineTimeError,
     lighthouse_handlers,
 )
 from rumor_mill.engine.ports import JobStatus, ModelProvider
+from rumor_mill.engine.recap_publication import (
+    DAILY_RECAP_JOB,
+    DailyRecapHandler,
+    DailyRecapPlanner,
+)
 from rumor_mill.engine.scheduling import SimulationScheduler
 from rumor_mill.observability import MetricsRegistry, configure_json_logging, observed_job
 
@@ -50,6 +56,7 @@ class SimulationWorker:
         poll_seconds: float = 5.0,
         run_batch_size: int = 100,
         job_batch_size: int = 100,
+        recap_batch_size: int = 3,
         provider: ModelProvider | None = None,
         metrics: MetricsRegistry | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -59,6 +66,7 @@ class SimulationWorker:
         self._poll_seconds = poll_seconds
         self._run_batch_size = run_batch_size
         self._job_batch_size = job_batch_size
+        self._recap_batch_size = recap_batch_size
         self._provider = provider
         self._metrics = metrics or MetricsRegistry()
         self._clock = clock
@@ -118,11 +126,25 @@ class SimulationWorker:
                     },
                 )
 
-        handlers = (
+        with self._unit_of_work() as unit_of_work:
+            recap_runs = unit_of_work.runs.list_recap_candidates(limit=self._run_batch_size)
+        planner = DailyRecapPlanner(self._unit_of_work)
+        recap_jobs_enqueued = 0
+        for run in recap_runs:
+            remaining = self._recap_batch_size - recap_jobs_enqueued
+            if remaining <= 0:
+                break
+            try:
+                recap_jobs_enqueued += planner.enqueue_missing(run.id, now=now, limit=remaining)
+            except Exception:
+                logger.exception("daily_recap_discovery_failed", extra={"run_id": str(run.id)})
+
+        handlers: dict[str, JobHandler] = dict(
             lighthouse_handlers()
             if self._provider is None
             else lighthouse_handlers(self._provider, self._unit_of_work)
         )
+        handlers[DAILY_RECAP_JOB] = DailyRecapHandler()
         observed_handlers = {
             kind: observed_job(handler, self._metrics) for kind, handler in handlers.items()
         }
@@ -133,6 +155,9 @@ class SimulationWorker:
             clock=self._clock,
         )
         counts = {"claimed": 0, "completed": 0, "retried": 0, "dead": 0}
+        recap_completed = 0
+        recap_failed = 0
+        story_completed = 0
         for _ in range(self._job_batch_size):
             job_result = job_worker.run_once()
             if job_result.job is None:
@@ -140,9 +165,12 @@ class SimulationWorker:
             counts["claimed"] += 1
             if job_result.completed:
                 counts["completed"] += 1
+                recap_completed += int(job_result.job.kind == DAILY_RECAP_JOB)
+                story_completed += int(job_result.job.kind != DAILY_RECAP_JOB)
             else:
                 counts["dead"] += int(job_result.job.status is JobStatus.DEAD)
                 counts["retried"] += int(job_result.job.status is JobStatus.FAILED)
+                recap_failed += int(job_result.job.kind == DAILY_RECAP_JOB)
         with self._unit_of_work() as unit_of_work:
             pending = len(unit_of_work.jobs.list(status=JobStatus.PENDING, limit=1_000))
         for state, value in (*counts.items(), ("pending", pending)):
@@ -153,13 +181,40 @@ class SimulationWorker:
         with self._session_factory.begin() as database:
             heartbeat = database.get(WorkerHeartbeatModel, self._worker_id)
             assert heartbeat is not None
-            heartbeat.story_queue_depth = pending
+            heartbeat.story_queue_depth = (
+                database.scalar(
+                    select(func.count())
+                    .select_from(JobModel)
+                    .where(
+                        JobModel.kind != DAILY_RECAP_JOB,
+                        JobModel.status.in_(("pending", "failed", "running")),
+                    )
+                )
+                or 0
+            )
+            heartbeat.recap_queue_depth = (
+                database.scalar(
+                    select(func.count())
+                    .select_from(JobModel)
+                    .where(
+                        JobModel.kind == DAILY_RECAP_JOB,
+                        JobModel.status.in_(("pending", "failed", "running")),
+                    )
+                )
+                or 0
+            )
             if advanced:
                 heartbeat.last_clock_advanced_at = now
             if jobs_enqueued:
                 heartbeat.last_story_job_enqueued_at = now
-            if counts["completed"]:
+            if story_completed:
                 heartbeat.last_story_job_completed_at = self._clock()
+            if recap_jobs_enqueued:
+                heartbeat.last_recap_job_enqueued_at = now
+            if recap_completed:
+                heartbeat.last_recap_job_completed_at = self._clock()
+            if recap_failed:
+                heartbeat.last_recap_job_failed_at = self._clock()
         return advanced
 
     def run_forever(self, stop: Event | None = None) -> None:
@@ -212,6 +267,7 @@ def main(settings: Settings | None = None) -> None:
         poll_seconds=settings.worker_poll_seconds,
         run_batch_size=settings.worker_run_batch_size,
         job_batch_size=settings.worker_job_batch_size,
+        recap_batch_size=settings.worker_recap_batch_size,
         provider=provider,
         metrics=metrics,
     ).run_forever()

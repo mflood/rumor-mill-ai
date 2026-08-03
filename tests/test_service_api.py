@@ -15,7 +15,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from rumor_mill.adapters.persistence import create_database_engine, create_session_factory
@@ -129,6 +129,7 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
         "database": "ok",
         "worker": "ok",
         "story_pipeline": "ok",
+        "recap_pipeline": "ok",
         "provider": "ok",
     }
     request = client.get("/health/live", headers={"X-Request-ID": "trace-123"})
@@ -375,6 +376,16 @@ def test_daily_recap_is_public_only_cached_and_operator_editable(api) -> None:  
                     source_ids=[str(uuid4())],
                     payload={"visibility": "engine_only", "importance": 5},
                 ),
+                ArtifactModel(
+                    id=uuid4(),
+                    run_id=run_id,
+                    kind="conversation",
+                    title="Raw public-tagged transcript",
+                    body="This non-presentation record must never be recapped.",
+                    generated_at=now,
+                    source_ids=[],
+                    payload={"visibility": "public", "importance": 5},
+                ),
             ]
         )
         database.commit()
@@ -385,6 +396,7 @@ def test_daily_recap_is_public_only_cached_and_operator_editable(api) -> None:  
     first = generated.json()
     assert first["recap"]["headline"] == "The skiff returned empty"
     assert "Hidden motive" not in generated.text
+    assert "Raw public-tagged transcript" not in generated.text
 
     cached = client.post(f"/api/v1/runs/{run_id}/recaps/daily", headers=operator, json={}).json()
     assert cached["id"] == first["id"]
@@ -392,10 +404,11 @@ def test_daily_recap_is_public_only_cached_and_operator_editable(api) -> None:  
 
     forced = client.post(
         f"/api/v1/runs/{run_id}/recaps/daily", headers=operator, json={"force": True}
-    ).json()
-    assert forced["id"] != first["id"]
+    )
+    assert forced.status_code == 409
+    assert "immutable" in forced.json()["detail"]
     edited = client.patch(
-        f"/api/v1/recaps/{forced['id']}",
+        f"/api/v1/recaps/{first['id']}",
         headers=operator,
         json={"headline": "Edited dispatch", "dek": "Reviewed by the story operator."},
     )
@@ -415,6 +428,94 @@ def test_daily_recap_is_public_only_cached_and_operator_editable(api) -> None:  
         json={"headline": "No", "dek": "Wrong kind"},
     )
     assert wrong_kind.status_code == 404
+
+
+def test_operator_can_publish_an_explicit_missed_story_date(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        missed_date = run.simulation_time.date() - timedelta(days=1)
+        database.add(
+            ArtifactModel(
+                run_id=run_id,
+                kind="story_card",
+                title="The missed light",
+                body="A public dispatch from the prior story day.",
+                generated_at=datetime.combine(missed_date, datetime.min.time(), tzinfo=UTC),
+                source_ids=[str(uuid4())],
+                payload={"visibility": "public", "importance": 5},
+            )
+        )
+        database.commit()
+
+    generated = client.post(
+        f"/api/v1/runs/{run_id}/recaps/daily",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"story_date": missed_date.isoformat()},
+    )
+    assert generated.status_code == 200
+    assert generated.json()["recap"]["story_date"] == missed_date.isoformat()
+    with factory() as database:
+        recap = database.scalar(
+            select(ArtifactModel).where(
+                ArtifactModel.run_id == run_id,
+                ArtifactModel.kind == "daily_recap",
+            )
+        )
+        assert recap is not None and recap.story_date == missed_date
+
+
+def test_operator_recap_rejects_future_and_recovers_concurrent_identity(api, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    operator = {"Authorization": "Bearer operator-secret"}
+    run_id = UUID(str(initialize(client)["id"]))
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        story_date = run.simulation_time.date()
+    future = client.post(
+        f"/api/v1/runs/{run_id}/recaps/daily",
+        headers=operator,
+        json={"story_date": (story_date + timedelta(days=1)).isoformat()},
+    )
+    assert future.status_code == 409
+
+    concurrent_id = uuid4()
+
+    def concurrent_publication(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args
+        target_date = kwargs["story_date"]
+        recap = build_daily_recap(target_date, [])
+        with factory.begin() as database:
+            database.add(
+                ArtifactModel(
+                    id=concurrent_id,
+                    run_id=run_id,
+                    kind="daily_recap",
+                    title=recap.headline,
+                    body=recap.dek,
+                    generated_at=datetime.now(UTC),
+                    story_date=target_date,
+                    source_ids=[],
+                    payload=recap.artifact_payload(),
+                )
+            )
+        raise IntegrityError("concurrent canonical recap", {}, RuntimeError("winner"))
+
+    monkeypatch.setattr("rumor_mill.main.publish_daily_recap", concurrent_publication)
+    recovered = client.post(f"/api/v1/runs/{run_id}/recaps/daily", headers=operator, json={})
+    assert recovered.status_code == 200
+    assert recovered.json()["id"] == str(concurrent_id)
+
+    missing_run_id = UUID(str(initialize(client)["id"]))
+    monkeypatch.setattr(
+        "rumor_mill.main.publish_daily_recap",
+        lambda *args, **kwargs: (uuid4(), True),
+    )
+    missing = client.post(f"/api/v1/runs/{missing_run_id}/recaps/daily", headers=operator, json={})
+    assert missing.status_code == 503
 
 
 def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  # type: ignore[no-untyped-def]
@@ -707,6 +808,88 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
     empty = client.get(f"/lighthouse/runs/{empty_run}/archive")
     assert "The archive is waiting" in empty.text
     assert "No public dispatch has been published" in empty.text
+
+
+def test_archive_and_operator_explain_recap_pipeline_states(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    with factory.begin() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        source_date = run.simulation_time.date()
+        run.simulation_time = run.simulation_time + timedelta(days=1)
+        database.add(
+            ArtifactModel(
+                run_id=run_id,
+                kind="story_card",
+                title="Awaiting dispatch",
+                body="Public source content.",
+                generated_at=datetime.combine(source_date, datetime.min.time(), tzinfo=UTC),
+                source_ids=[str(uuid4())],
+                payload={"visibility": "public"},
+            )
+        )
+        job = JobModel(
+            run_id=run_id,
+            idempotency_key=f"run:{run_id}:daily-recap:{source_date}",
+            kind="lighthouse_daily_recap",
+            status="pending",
+            scheduled_at=run.simulation_time,
+            available_at=run.simulation_time,
+            payload={"story_date": source_date.isoformat()},
+        )
+        database.add(job)
+
+    client.post("/operator/session", content="key=operator-secret")
+    pending_archive = client.get(f"/lighthouse/runs/{run_id}/archive")
+    assert "being prepared for the archive" in pending_archive.text
+    pending_console = client.get(f"/operator/console/runs/{run_id}")
+    assert "closed story date(s) awaiting publication" in pending_console.text
+
+    with factory.begin() as database:
+        stored_job = database.get(JobModel, job.id)
+        assert stored_job is not None
+        stored_job.status = "failed"
+        stored_job.attempts = 1
+        stored_job.error = "ValueError: safe recap failure"
+    failed_archive = client.get(f"/lighthouse/runs/{run_id}/archive")
+    assert "could not be published" in failed_archive.text
+    failed_console = client.get(f"/operator/console/runs/{run_id}")
+    assert "Publication failed" in failed_console.text
+
+    with factory.begin() as database:
+        stored_job = database.get(JobModel, job.id)
+        assert stored_job is not None
+        database.delete(stored_job)
+    awaiting_archive = client.get(f"/lighthouse/runs/{run_id}/archive")
+    assert "awaiting publication" in awaiting_archive.text
+
+    published = client.post(
+        f"/api/v1/runs/{run_id}/recaps/daily",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"story_date": source_date.isoformat()},
+    )
+    assert published.status_code == 200
+    caught_up_console = client.get(f"/operator/console/runs/{run_id}")
+    assert "Archive fully caught up" in caught_up_console.text
+
+    current_run_id = UUID(str(initialize(client)["id"]))
+    with factory.begin() as database:
+        current_run = database.get(RunModel, current_run_id)
+        assert current_run is not None
+        database.add(
+            ArtifactModel(
+                run_id=current_run_id,
+                kind="story_card",
+                title="Still unfolding",
+                body="Current public source content.",
+                generated_at=current_run.simulation_time,
+                source_ids=[str(uuid4())],
+                payload={"visibility": "public"},
+            )
+        )
+    current_archive = client.get(f"/lighthouse/runs/{current_run_id}/archive")
+    assert "public story is still unfolding" in current_archive.text
 
 
 def test_players_report_messages_panels_and_episodes_with_safe_references(api) -> None:  # type: ignore[no-untyped-def]
@@ -1534,8 +1717,9 @@ def test_recap_candidate_fallbacks_skip_invalid_or_unavailable_suggestions(api) 
         )
         database.commit()
     malformed = client.get("/lighthouse/today")
-    assert "No episode has been published yet" in malformed.text
-    assert "Greyhaven is quiet right now" in malformed.text
+    assert "Read the latest published dispatch" in malformed.text
+    assert "Who closed the courier route?" in malformed.text
+    assert "Incomplete" not in malformed.text
 
 
 def test_browser_security_controls_and_session_rotation(api) -> None:  # type: ignore[no-untyped-def]

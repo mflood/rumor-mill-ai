@@ -1,7 +1,7 @@
 """Repository contracts that keep the engine independent of SQLAlchemy."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from types import TracebackType
 from typing import Any, Protocol, Self
@@ -16,6 +16,7 @@ from rumor_mill.engine.domain import (
     PresentationArtifact,
     Scene,
 )
+from rumor_mill.engine.recap import DailyRecap, RecapSource
 
 
 class RunStatus(StrEnum):
@@ -119,6 +120,8 @@ class RunRepository(Protocol):
 
     def list_active(self, *, limit: int = 100) -> tuple[RunRecord, ...]: ...
 
+    def list_recap_candidates(self, *, limit: int = 100) -> tuple[RunRecord, ...]: ...
+
     def update_clock(
         self, run_id: UUID, *, simulation_time: datetime, wall_time_anchor: datetime
     ) -> None: ...
@@ -187,6 +190,26 @@ class BeliefRepository(Protocol):
     def list_evidence(self, run_id: UUID, belief: Belief) -> tuple[Evidence, ...]: ...
 
 
+class ArtifactRepository(Protocol):
+    def public_source_dates(self, run_id: UUID) -> tuple[date, ...]: ...
+
+    def recap_sources(self, run_id: UUID, story_date: date) -> tuple[RecapSource, ...]: ...
+
+    def published_recap_dates(self, run_id: UUID) -> frozenset[date]: ...
+
+    def get_daily_recap(self, run_id: UUID, story_date: date) -> tuple[UUID, DailyRecap] | None: ...
+
+    def add_daily_recap(
+        self,
+        run_id: UUID,
+        *,
+        artifact_id: UUID,
+        story_date: date,
+        published_at: datetime,
+        recap: DailyRecap,
+    ) -> None: ...
+
+
 class UnitOfWork(Protocol):
     @property
     def worlds(self) -> WorldRepository: ...
@@ -208,6 +231,9 @@ class UnitOfWork(Protocol):
 
     @property
     def beliefs(self) -> BeliefRepository: ...
+
+    @property
+    def artifacts(self) -> ArtifactRepository: ...
 
     def __enter__(self) -> Self: ...
 

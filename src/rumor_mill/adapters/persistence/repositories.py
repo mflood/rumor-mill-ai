@@ -1,6 +1,6 @@
 """SQLAlchemy implementations of engine repository ports."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import TracebackType
 from typing import Any, cast
 from uuid import UUID
@@ -38,6 +38,7 @@ from rumor_mill.engine.ports import (
     RunStatus,
     WorldRecord,
 )
+from rumor_mill.engine.recap import PUBLIC_RECAP_SOURCE_KINDS, DailyRecap, RecapSource
 
 
 class SqlAlchemyWorldRepository:
@@ -111,6 +112,19 @@ class SqlAlchemyRunRepository:
         models = self._session.scalars(
             select(RunModel)
             .where(RunModel.status == RunStatus.RUNNING.value)
+            .order_by(RunModel.started_at, RunModel.id)
+            .limit(limit)
+        )
+        return tuple(record for model in models if (record := self._record(model)) is not None)
+
+    def list_recap_candidates(self, *, limit: int = 100) -> tuple[RunRecord, ...]:
+        models = self._session.scalars(
+            select(RunModel)
+            .join(WorldModel, WorldModel.id == RunModel.world_id)
+            .where(
+                WorldModel.slug == "lighthouse",
+                RunModel.status.in_((RunStatus.RUNNING.value, RunStatus.COMPLETED.value)),
+            )
             .order_by(RunModel.started_at, RunModel.id)
             .limit(limit)
         )
@@ -321,6 +335,119 @@ class SqlAlchemyJobRepository:
             error=model.error,
             result=model.result,
         )
+
+
+class SqlAlchemyArtifactRepository:
+    """Persist canonical public recaps without exposing private story state."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def public_source_dates(self, run_id: UUID) -> tuple[date, ...]:
+        models = self._session.scalars(
+            select(ArtifactModel).where(
+                ArtifactModel.run_id == run_id,
+                ArtifactModel.kind.in_(PUBLIC_RECAP_SOURCE_KINDS),
+            )
+        )
+        dates = {
+            model.generated_at.replace(tzinfo=UTC).date()
+            for model in models
+            if model.payload.get("visibility", "public") == "public"
+        }
+        return tuple(sorted(dates))
+
+    def recap_sources(self, run_id: UUID, story_date: date) -> tuple[RecapSource, ...]:
+        models = self._session.scalars(
+            select(ArtifactModel)
+            .where(
+                ArtifactModel.run_id == run_id,
+                ArtifactModel.kind.in_(PUBLIC_RECAP_SOURCE_KINDS),
+            )
+            .order_by(ArtifactModel.generated_at.desc(), ArtifactModel.id)
+        )
+        return tuple(
+            RecapSource(
+                id=model.id,
+                kind=model.kind,
+                title=model.title,
+                body=model.body,
+                generated_at=model.generated_at.replace(tzinfo=UTC),
+                visibility=model.payload.get("visibility", "public"),
+                importance=model.payload.get("importance", 1),
+                location_id=model.payload.get("location_id"),
+                character_id=model.payload.get("character_id"),
+                active_thread=model.payload.get("active_thread"),
+            )
+            for model in models
+            if model.generated_at.replace(tzinfo=UTC).date() == story_date
+            and model.payload.get("visibility", "public") == "public"
+        )
+
+    def published_recap_dates(self, run_id: UUID) -> frozenset[date]:
+        models = self._session.scalars(
+            select(ArtifactModel).where(
+                ArtifactModel.run_id == run_id,
+                ArtifactModel.kind == "daily_recap",
+            )
+        )
+        return frozenset(
+            story_date
+            for model in models
+            if (story_date := self._story_date(model)) is not None
+            and model.payload.get("visibility", "public") == "public"
+            and model.payload.get("canonical", True)
+            and "recap" in model.payload
+        )
+
+    def get_daily_recap(self, run_id: UUID, story_date: date) -> tuple[UUID, DailyRecap] | None:
+        models = self._session.scalars(
+            select(ArtifactModel)
+            .where(
+                ArtifactModel.run_id == run_id,
+                ArtifactModel.kind == "daily_recap",
+            )
+            .order_by(ArtifactModel.created_at.desc())
+        )
+        for model in models:
+            if (
+                self._story_date(model) == story_date
+                and model.payload.get("canonical", True)
+                and "recap" in model.payload
+            ):
+                return model.id, DailyRecap.model_validate(model.payload["recap"])
+        return None
+
+    def add_daily_recap(
+        self,
+        run_id: UUID,
+        *,
+        artifact_id: UUID,
+        story_date: date,
+        published_at: datetime,
+        recap: DailyRecap,
+    ) -> None:
+        self._session.add(
+            ArtifactModel(
+                id=artifact_id,
+                run_id=run_id,
+                kind="daily_recap",
+                title=recap.headline,
+                body=recap.dek,
+                generated_at=published_at,
+                story_date=story_date,
+                source_ids=[str(panel.source_id) for panel in recap.panels],
+                payload=recap.artifact_payload(),
+            )
+        )
+        self._session.flush()
+
+    @staticmethod
+    def _story_date(model: ArtifactModel) -> date | None:
+        if model.story_date is not None:
+            return model.story_date
+        raw = model.payload.get("recap", {}).get("story_date")
+        return date.fromisoformat(raw) if isinstance(raw, str) else None
 
 
 class SqlAlchemyEventRepository:
@@ -600,6 +727,7 @@ class SqlAlchemyUnitOfWork:
         self.runs = SqlAlchemyRunRepository(self._session)
         self.events = SqlAlchemyEventRepository(self._session)
         self.jobs = SqlAlchemyJobRepository(self._session)
+        self.artifacts = SqlAlchemyArtifactRepository(self._session)
         self.scenes = SqlAlchemySceneRepository(self._session)
         self.memories = SqlAlchemyMemoryRepository(self._session)
         self.beliefs = SqlAlchemyBeliefRepository(self._session)
