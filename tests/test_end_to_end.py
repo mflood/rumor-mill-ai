@@ -1,6 +1,7 @@
 """End-to-end coverage for a returning player's complete story lifecycle."""
 
 import json
+import re
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -90,8 +91,17 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
 
             today = first_visit.get("/lighthouse/today")
             assert today.status_code == 200
-            assert f"/lighthouse/runs/{run_id}/town/market" in today.text
             assert f"/lighthouse/runs/{run_id}/people/ada" in today.text
+            assert 'data-primary-recommendation="true"' in today.text
+            assert "Ada is not at a public location" in today.text
+            assert f"/lighthouse/runs/{run_id}/town/market?recommended=" not in today.text
+            primary = re.search(
+                r'data-primary-recommendation="true"[^>]+href="([^"]+)"', today.text
+            )
+            assert primary is not None
+            destination = first_visit.get(primary.group(1))
+            assert destination.status_code == 200
+            assert 'data-playable-action="contact"' in destination.text
 
             harbor = first_visit.get(f"/lighthouse/runs/{run_id}/town/market")
             assert harbor.status_code == 200

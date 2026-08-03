@@ -47,11 +47,17 @@ def smoke(base_url: str, opener: Callable[..., Any] | None = None) -> None:
             raise RuntimeError("/lighthouse/today playable-page smoke check failed")
 
     destination = re.search(
-        rb'href="(/lighthouse/runs/[^"?#]+/(?:town/[^"?#]+|people/[^"?#]+))"', body
+        rb'data-primary-recommendation="true"[^>]+href="(/lighthouse/runs/[^"]+)"', body
     )
     if destination is None:
-        raise RuntimeError("/lighthouse/today exposed no location or character destination")
+        raise RuntimeError("/lighthouse/today exposed no primary playable recommendation")
     path = destination.group(1).decode("ascii")
     with opener(f"{base_url}{path}", timeout=15) as response:
-        if response.status != 200 or not response.read():
+        destination_body = response.read()
+        recognized_action = re.search(
+            rb'data-playable-action="(?:visit|observe|contact|read|wait)"',
+            destination_body,
+        )
+        meaningful_content = b'data-meaningful-public-content="' in destination_body
+        if response.status != 200 or not (recognized_action or meaningful_content):
             raise RuntimeError(f"{path} playable destination smoke check failed")

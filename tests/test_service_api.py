@@ -1,7 +1,9 @@
 """Integration coverage for the stable simulation service API."""
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
+from html import unescape
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -31,7 +33,12 @@ from rumor_mill.adapters.persistence.models import (
 from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.config import Settings
 from rumor_mill.engine.conversation import CharacterConversationEngine
-from rumor_mill.engine.ports import ProviderError, ProviderRateLimitError, ProviderTimeoutError
+from rumor_mill.engine.ports import (
+    ProviderError,
+    ProviderRateLimitError,
+    ProviderTimeoutError,
+    RunStatus,
+)
 from rumor_mill.engine.recap import RecapSource, build_daily_recap
 from rumor_mill.main import create_app
 
@@ -1143,6 +1150,279 @@ def test_today_presents_one_accessible_current_story_state(api) -> None:  # type
     assert "Your progress and private conversations are safe" in failed.text
     assert "No new public scenes" not in failed.text
     assert "Since your last visit" not in failed.text
+
+
+def test_lighthouse_recommendations_validate_live_state_and_recover_when_stale(  # type: ignore[no-untyped-def]
+    api,
+) -> None:
+    client, factory = api
+    definition = world_payload()
+    cast_items = cast(list[dict[str, object]], definition["cast"])
+    cast_items[0]["private_contact_mode"] = "asynchronous"
+    cast_items[1]["private_contact_mode"] = "unavailable"
+    definition["routines"] = [
+        {
+            "id": "ada-market-window",
+            "character_id": "ada",
+            "location_id": "market",
+            "days": list(range(1, 15)),
+            "start_time": "10:00",
+            "end_time": "11:00",
+            "activity": "Making private deliveries.",
+            "public_activity": "Taking public courier requests.",
+        }
+    ]
+    initialized = client.post(
+        "/api/v1/worlds/lantern-market/runs",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"definition": definition, "seed": 101, "clock_mode": "manual"},
+    )
+    assert initialized.status_code == 201
+    run_id = UUID(initialized.json()["id"])
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.simulation_time = datetime.combine(run.started_at.date(), datetime.min.time()).replace(
+            hour=10, minute=30
+        )
+        database.commit()
+
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    current = client.get("/lighthouse/today")
+    assert "Ada is publicly present there now" in current.text
+    assert f"/lighthouse/runs/{run_id}/town/market?recommended=visit" in current.text
+    assert "Start at the harbor" not in current.text
+    primary = re.search(r'data-primary-recommendation="true"[^>]+href="([^"]+)"', current.text)
+    assert primary is not None
+    live_destination = client.get(unescape(primary.group(1)))
+    assert "Meet Ada in public" in live_destination.text
+    assert 'data-meaningful-public-content="resident"' in live_destination.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.simulation_time = run.simulation_time.replace(hour=11, minute=30)
+        database.commit()
+
+    stale = client.get(unescape(primary.group(1)))
+    assert stale.status_code == 200
+    assert "The town changed after that recommendation" in stale.text
+    assert "Ada is not publicly present" in stale.text
+    assert "asynchronous reply" in stale.text
+    assert 'data-playable-action="contact"' in stale.text
+
+
+def test_lighthouse_recommends_public_content_without_claiming_presence(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    definition = world_payload()
+    for character in cast(list[dict[str, object]], definition["cast"]):
+        character["private_contact_mode"] = "unavailable"
+    initialized = client.post(
+        "/api/v1/worlds/lantern-market/runs",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"definition": definition, "seed": 102, "clock_mode": "manual"},
+    )
+    assert initialized.status_code == 201
+    run_id = UUID(initialized.json()["id"])
+    now = datetime.now(UTC)
+    recap = build_daily_recap(
+        now.date(),
+        [
+            RecapSource(
+                id=uuid4(),
+                kind="story_card",
+                title="Lanterns remain at the west stalls",
+                body="A public notice records the last courier route.",
+                generated_at=now,
+                location_id="market",
+            )
+        ],
+    )
+    with factory() as database:
+        database.add(
+            ArtifactModel(
+                run_id=run_id,
+                kind="daily_recap",
+                title=recap.headline,
+                body=recap.dek,
+                generated_at=now,
+                source_ids=[],
+                payload=recap.artifact_payload(),
+            )
+        )
+        database.commit()
+
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    today = client.get("/lighthouse/today")
+    assert "No resident is publicly present, but a published dispatch is available" in today.text
+    assert 'data-playable-action="observe"' in today.text
+    assert "Message Ada" not in today.text
+    destination = client.get(f"/lighthouse/runs/{run_id}/town/market?recommended=observe")
+    assert 'data-meaningful-public-content="dispatch"' in destination.text
+    assert "Read the public activity" in destination.text
+
+
+def test_lighthouse_all_quiet_state_uses_an_honest_wait_action(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    definition = world_payload()
+    for character in cast(list[dict[str, object]], definition["cast"]):
+        character["private_contact_mode"] = "unavailable"
+    definition["routines"] = [
+        {
+            "id": "ada-future-window",
+            "character_id": "ada",
+            "location_id": "market",
+            "days": list(range(1, 15)),
+            "start_time": "10:00",
+            "end_time": "11:00",
+            "activity": "Making deliveries.",
+            "public_activity": "Taking public courier requests.",
+        }
+    ]
+    initialized = client.post(
+        "/api/v1/worlds/lantern-market/runs",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"definition": definition, "seed": 103, "clock_mode": "manual"},
+    )
+    assert initialized.status_code == 201
+    run_id = UUID(initialized.json()["id"])
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.simulation_time = datetime.combine(run.started_at.date(), datetime.min.time()).replace(
+            hour=9
+        )
+        database.commit()
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+
+    today = client.get("/lighthouse/today")
+    assert "Greyhaven is quiet right now" in today.text
+    assert "The next authored public window is Day 1 at 10:00" in today.text
+    assert 'data-playable-action="wait"' in today.text
+    assert "Go to Lantern Market" not in today.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.simulation_time = datetime.combine(
+            run.started_at.date() + timedelta(days=13), datetime.min.time()
+        ).replace(hour=11, minute=30)
+        database.commit()
+    no_future_window = client.get("/lighthouse/today")
+    assert "No public activity or private contact is currently available" in no_future_window.text
+
+
+def test_recap_candidate_fallbacks_skip_invalid_or_unavailable_suggestions(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    definition = world_payload()
+    definition["routines"] = [
+        {
+            "id": "ada-public-window",
+            "character_id": "ada",
+            "location_id": "market",
+            "days": list(range(1, 15)),
+            "start_time": "10:00",
+            "end_time": "11:00",
+            "activity": "Making deliveries.",
+            "public_activity": "Taking public courier requests.",
+        }
+    ]
+    initialized = client.post(
+        "/api/v1/worlds/lantern-market/runs",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"definition": definition, "seed": 104, "clock_mode": "manual"},
+    )
+    run_id = UUID(initialized.json()["id"])
+    now = datetime.now(UTC)
+    payload = {
+        "visibility": "public",
+        "recap": {
+            "story_date": now.date().isoformat(),
+            "headline": "A courier is taking requests",
+            "dek": "A public route remains open.",
+            "panels": [],
+            "active_threads": [],
+            "suggested_location_ids": ["unknown-place"],
+            "suggested_character_ids": ["ada"],
+            "state": "active",
+        },
+    }
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.simulation_time = datetime.combine(run.started_at.date(), datetime.min.time()).replace(
+            hour=10, minute=30
+        )
+        database.add(
+            ArtifactModel(
+                run_id=run_id,
+                kind="daily_recap",
+                title="A courier is taking requests",
+                body="A public route remains open.",
+                generated_at=now,
+                source_ids=[],
+                payload=payload,
+            )
+        )
+        database.commit()
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    today = client.get("/lighthouse/today")
+    assert "Ada is publicly present there now" in today.text
+
+    unavailable_definition = world_payload()
+    cast(dict[str, object], unavailable_definition["metadata"])["id"] = "lantern-market-quiet"
+    for character in cast(list[dict[str, object]], unavailable_definition["cast"]):
+        character["private_contact_mode"] = "unavailable"
+    second = client.post(
+        "/api/v1/worlds/lantern-market-quiet/runs",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"definition": unavailable_definition, "seed": 105, "clock_mode": "manual"},
+    )
+    second_run_id = UUID(second.json()["id"])
+    read_payload = {
+        **payload,
+        "recap": {
+            **cast(dict[str, object], payload["recap"]),
+            "active_threads": ["Who closed the courier route?"],
+        },
+    }
+    with factory() as database:
+        first_run = database.get(RunModel, run_id)
+        assert first_run is not None
+        first_run.status = RunStatus.PAUSED
+        database.add(
+            ArtifactModel(
+                run_id=second_run_id,
+                kind="daily_recap",
+                title="The route closes",
+                body="The public dispatch remains readable.",
+                generated_at=now + timedelta(minutes=1),
+                source_ids=[],
+                payload=read_payload,
+            )
+        )
+        database.commit()
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    read_fallback = client.get("/lighthouse/today")
+    assert "Read the latest published dispatch" in read_fallback.text
+    assert "Follow the thread: Who closed the courier route?" in read_fallback.text
+
+    with factory() as database:
+        database.add(
+            ArtifactModel(
+                run_id=second_run_id,
+                kind="daily_recap",
+                title="Malformed public recap",
+                body="Ignored safely.",
+                generated_at=now + timedelta(minutes=2),
+                source_ids=[],
+                payload={"visibility": "public", "recap": {"headline": "Incomplete"}},
+            )
+        )
+        database.commit()
+    malformed = client.get("/lighthouse/today")
+    assert "No episode has been published yet" in malformed.text
+    assert "Greyhaven is quiet right now" in malformed.text
 
 
 def test_browser_security_controls_and_session_rotation(api) -> None:  # type: ignore[no-untyped-def]
