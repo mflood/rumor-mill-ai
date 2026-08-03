@@ -1041,6 +1041,16 @@ def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type:
     assert forgotten.headers["location"] == "/lighthouse"
 
 
+def test_today_redirects_visitor_without_an_active_story(api) -> None:  # type: ignore[no-untyped-def]
+    client, _ = api
+    start_visitor_session(client)
+
+    response = client.get("/lighthouse/today", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/lighthouse"
+
+
 def test_today_presents_one_accessible_current_story_state(api) -> None:  # type: ignore[no-untyped-def]
     client, factory = api
     run_id = UUID(str(initialize(client)["id"]))

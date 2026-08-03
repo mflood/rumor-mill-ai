@@ -666,8 +666,10 @@ def create_app(
             )
             action = "Read the previous dispatch"
             href = f"/lighthouse/runs/{run.id}/archive"
-        elif recap_artifact is not None and _aware(recap_artifact.generated_at) > _aware(
-            visitor.last_seen_at
+        elif (
+            recap is not None
+            and recap_artifact is not None
+            and _aware(recap_artifact.generated_at) > _aware(visitor.last_seen_at)
         ):
             title = "Since your last visit"
             body = (
@@ -892,9 +894,11 @@ def create_app(
     ) -> Response:
         """Render the latest spoiler-safe daily briefing without requiring JavaScript."""
         visitor = optional_visitor(database, token)
+        if visitor is None:
+            return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         run_model = (
             database.get(RunModel, visitor.active_run_id)
-            if visitor is not None and visitor.active_run_id is not None
+            if visitor.active_run_id is not None
             else None
         )
         if run_model is None or run_model.status != RunStatus.RUNNING:
