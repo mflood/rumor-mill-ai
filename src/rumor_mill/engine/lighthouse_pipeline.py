@@ -1,7 +1,7 @@
 """Production work plan and durable handlers for the packaged Lighthouse season."""
 
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -30,6 +30,27 @@ from rumor_mill.engine.scene_generation import SceneGenerationService, ScenePlan
 from rumor_mill.engine.scheduling import ScheduledWork
 
 LIGHTHOUSE_STORY_JOB = "lighthouse_story"
+
+
+class RoutineTimeError(ValueError):
+    """A bounded, payload-free diagnostic for an invalid persisted routine time."""
+
+
+def _routine_offset(value: object) -> timedelta:
+    if not isinstance(value, str):
+        raise RoutineTimeError("routine start_time must be an ISO local time string")
+    try:
+        parsed = time.fromisoformat(value)
+    except ValueError as exc:
+        raise RoutineTimeError("routine start_time must be a valid ISO local time") from exc
+    if parsed.tzinfo is not None:
+        raise RoutineTimeError("routine start_time must not include a UTC offset")
+    return timedelta(
+        hours=parsed.hour,
+        minutes=parsed.minute,
+        seconds=parsed.second,
+        microseconds=parsed.microsecond,
+    )
 
 
 def _stable_id(run_id: UUID, kind: str, authored_id: str) -> UUID:
@@ -82,8 +103,7 @@ class LighthouseWorkSource:
                 )
 
         for routine in definition.get("routines", []):
-            hour, minute = (int(part) for part in routine["start_time"].split(":"))
-            offset = timedelta(hours=hour, minutes=minute)
+            offset = _routine_offset(routine.get("start_time"))
             for day in routine["days"]:
                 scheduled_at = run.started_at + timedelta(days=int(day) - 1) + offset
                 if after < scheduled_at <= through:

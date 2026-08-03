@@ -20,7 +20,7 @@ from rumor_mill.adapters.persistence import (
 )
 from rumor_mill.adapters.persistence.models import JobModel, WorldModel
 from rumor_mill.engine.jobs import DurableJobWorker
-from rumor_mill.engine.lighthouse_pipeline import LighthouseWorkSource
+from rumor_mill.engine.lighthouse_pipeline import LighthouseWorkSource, RoutineTimeError
 from rumor_mill.engine.ports import (
     ClockMode,
     JobRecord,
@@ -308,6 +308,73 @@ def test_lighthouse_does_not_enqueue_a_dependency_after_its_latest_day(
         )
         == ()
     )
+
+
+@pytest.mark.parametrize(
+    ("serialized_time", "expected"),
+    [
+        ("05:30", timedelta(hours=5, minutes=30)),
+        ("05:30:00", timedelta(hours=5, minutes=30)),
+        ("05:30:04.250000", timedelta(hours=5, minutes=30, seconds=4, milliseconds=250)),
+    ],
+)
+def test_lighthouse_accepts_iso_local_routine_times(
+    scheduler_database: Any, serialized_time: str, expected: timedelta
+) -> None:
+    factory = scheduler_database
+    definition = {
+        "beat_graph": {"entry_beat_ids": [], "beats": []},
+        "routines": [
+            {
+                "id": "watch",
+                "character_id": "keeper",
+                "location_id": "harbor",
+                "days": [1],
+                "start_time": serialized_time,
+                "public_activity": "Harbor watch.",
+            }
+        ],
+    }
+    run = RunRecord(uid(2), uid(1), RunStatus.RUNNING, 42, START)
+    seed_run(
+        SqlAlchemyUnitOfWork(factory),
+        WorldRecord(uid(1), "lighthouse", 1, definition, START),
+        run,
+    )
+
+    work = tuple(
+        LighthouseWorkSource(lambda: SqlAlchemyUnitOfWork(factory)).due_work(
+            run, after=START, through=START + timedelta(hours=6)
+        )
+    )
+
+    assert len(work) == 1
+    assert work[0].scheduled_at == START + expected
+
+
+@pytest.mark.parametrize("invalid_time", ["not-a-time", "05:30:00Z", 530, None])
+def test_lighthouse_rejects_invalid_routine_times_with_bounded_diagnostic(
+    scheduler_database: Any, invalid_time: object
+) -> None:
+    factory = scheduler_database
+    definition = {
+        "beat_graph": {"entry_beat_ids": [], "beats": []},
+        "routines": [{"id": "secret-routine", "days": [1], "start_time": invalid_time}],
+    }
+    run = RunRecord(uid(2), uid(1), RunStatus.RUNNING, 42, START)
+    seed_run(
+        SqlAlchemyUnitOfWork(factory),
+        WorldRecord(uid(1), "lighthouse", 1, definition, START),
+        run,
+    )
+
+    with pytest.raises(RoutineTimeError, match="routine start_time") as error:
+        tuple(
+            LighthouseWorkSource(lambda: SqlAlchemyUnitOfWork(factory)).due_work(
+                run, after=START, through=START + timedelta(hours=6)
+            )
+        )
+    assert "secret-routine" not in str(error.value)
 
 
 @pytest.mark.postgres

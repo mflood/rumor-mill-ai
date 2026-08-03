@@ -50,6 +50,8 @@ class JsonFormatter(logging.Formatter):
         "retried",
         "dead",
         "pending",
+        "exception_type",
+        "error_detail",
     )
 
     def format(self, record: logging.LogRecord) -> str:

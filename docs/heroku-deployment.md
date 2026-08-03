@@ -81,6 +81,12 @@ fails, inspect `heroku logs --tail --ps release`, correct the packaged definitio
 availability, and redeploy. For an already-migrated release, run the same bootstrap command as a
 one-off dyno and repeat the verification queries. Never delete a world or run to force recovery.
 
+Bootstrap persists routine times through the typed authoring model, so `HH:MM` source values are
+stored canonically as ISO local times such as `HH:MM:SS`. The scheduler accepts both forms, as well
+as ISO seconds and fractional seconds, and rejects timezone-bearing or malformed values with a
+payload-free diagnostic. The production-shaped deployment test must keep exercising this typed
+load, JSON serialization, persistence, and scheduling boundary.
+
 ## Metrics monitoring
 
 Production `/metrics` requests require the dedicated `RUMOR_MILL_METRICS_API_KEY` as a Bearer
