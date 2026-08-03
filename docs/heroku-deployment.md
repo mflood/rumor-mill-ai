@@ -142,6 +142,49 @@ invocation. Alerts should use only the bounded `story_pipeline` readiness compon
 `story_pipeline_progressing`/`story_queue_depth` metrics. Never label alerts with job/run UUIDs,
 visitor data, prompts, provider responses, or generated content.
 
+### Daily recap closure and missed-day recovery
+
+The worker publishes a recap only after its story date has closed in simulation time. A date with
+at least one public presentation artifact is eligible as soon as the run advances to a later date;
+the current date also closes when the run is marked completed. Dates with no public artifacts are
+deliberately omitted. Late-arriving artifacts never rewrite an already-published dispatch. Missing
+eligible dates are enqueued oldest-first, at most
+`RUMOR_MILL_WORKER_RECAP_BATCH_SIZE` (default `3`) per poll, with the stable key
+`run:<run-id>:daily-recap:<YYYY-MM-DD>`. The database permits only one canonical `daily_recap` per
+run and story date, so worker restarts, concurrent polls, and operator recovery are duplicate-safe.
+
+Use `/operator/console/runs/<run-id>` first. The Recap pipeline section distinguishes no public
+source content, closed content awaiting publication, a failed recap job, and a fully caught-up
+archive. The global console and worker heartbeat expose recap enqueue/completion/failure times and
+queue depth; `/health/ready` reports `recap_pipeline=degraded` for a dead or stale failed recap job.
+
+To recover a missed date after correcting the displayed failure, retry its
+`lighthouse_daily_recap` job from the run recovery page. If no job exists (for example, when
+recovering data created by an older release), either restart the current worker and allow discovery
+to enqueue it or invoke the authenticated operator endpoint with the explicit simulation date:
+
+```shell
+curl --fail-with-body \
+  --header "Authorization: Bearer $RUMOR_MILL_OPERATOR_API_KEY" \
+  --header "Content-Type: application/json" \
+  --data '{"story_date":"2026-08-02"}' \
+  "https://<app-name>.herokuapp.com/api/v1/runs/<run-id>/recaps/daily"
+```
+
+Repeat the request safely to verify it returns the same artifact ID, then open
+`/lighthouse/runs/<run-id>/archive` and inspect the dispatch for the intended public material.
+Confirm exactly one row exists before declaring recovery complete:
+
+```sql
+select run_id, story_date, count(*)
+from artifacts
+where kind = 'daily_recap' and run_id = '<run-id>'
+group by run_id, story_date;
+```
+
+Published recaps are immutable: `force=true` is rejected. Editorial headline/dek changes retain
+the same canonical artifact and story-date identity through the dedicated recap edit endpoint.
+
 Rotate the production credential whenever monitoring access changes and at least every 90 days:
 
 1. Generate a new random secret in a secure shell with `openssl rand -hex 32`.

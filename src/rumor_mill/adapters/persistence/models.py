@@ -1,6 +1,6 @@
 """Relational storage schema for all durable simulation state."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -337,7 +337,13 @@ class WorkerHeartbeatModel(Base):
     last_clock_advanced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_story_job_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_story_job_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_recap_job_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_recap_job_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_recap_job_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     story_queue_depth: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    recap_queue_depth: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
 
@@ -369,10 +375,17 @@ class ArtifactModel(IdMixin, CreatedMixin, Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    story_date: Mapped[date | None] = mapped_column(nullable=True)
     source_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
-    __table_args__ = (Index("ix_artifacts_run_generated", "run_id", "generated_at"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "kind", "story_date", name="uq_artifacts_run_id_kind_story_date"
+        ),
+        Index("ix_artifacts_run_generated", "run_id", "generated_at"),
+        Index("ix_artifacts_run_story_date", "run_id", "story_date"),
+    )
 
 
 class NarrativeReportModel(IdMixin, CreatedMixin, Base):

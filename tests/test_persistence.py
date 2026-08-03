@@ -12,7 +12,7 @@ from uuid import UUID
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, inspect, select
+from sqlalchemy import Engine, MetaData, Table, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -134,6 +134,89 @@ def test_migration_upgrade_indexes_and_downgrade(tmp_path: Path) -> None:
     command.downgrade(config, "base")
     engine = create_database_engine(database_url)
     assert not (set(inspect(engine).get_table_names()) & TABLES)
+    engine.dispose()
+
+
+def test_recap_identity_migration_preserves_legacy_duplicates(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'legacy-recaps.db'}"
+    config = alembic_config(database_url)
+    command.upgrade(config, "0012")
+    engine = create_database_engine(database_url)
+    metadata = MetaData()
+    worlds = Table("worlds", metadata, autoload_with=engine)
+    runs = Table("runs", metadata, autoload_with=engine)
+    artifacts = Table("artifacts", metadata, autoload_with=engine)
+    world_id = uid(901).hex
+    run_id = uid(902).hex
+    payload = {
+        "visibility": "public",
+        "recap": {
+            "story_date": "2026-08-02",
+            "headline": "Legacy recap",
+            "dek": "A prior published dispatch.",
+            "panels": [],
+            "active_threads": [],
+            "suggested_location_ids": [],
+            "suggested_character_ids": [],
+            "state": "quiet_day",
+        },
+    }
+    with engine.begin() as database:
+        database.execute(
+            worlds.insert().values(
+                id=world_id,
+                slug="legacy-lighthouse",
+                schema_version=1,
+                definition={},
+            )
+        )
+        database.execute(
+            runs.insert().values(
+                id=run_id,
+                world_id=world_id,
+                status="running",
+                seed=7,
+                started_at=NOW,
+                ended_at=None,
+                clock_mode="wall",
+                simulation_time=NOW,
+                wall_time_anchor=NOW,
+                clock_rate=1,
+                tick_seconds=300,
+                max_catch_up_ticks=12,
+            )
+        )
+        for index in range(2):
+            database.execute(
+                artifacts.insert().values(
+                    id=uid(910 + index).hex,
+                    run_id=run_id,
+                    scene_id=None,
+                    kind="daily_recap",
+                    title=f"Legacy recap {index}",
+                    body="Previously published.",
+                    generated_at=NOW.replace(minute=index),
+                    source_ids=[],
+                    payload=payload,
+                )
+            )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_database_engine(database_url)
+    migrated = Table("artifacts", MetaData(), autoload_with=engine)
+    with engine.connect() as database:
+        rows = list(
+            database.execute(
+                select(migrated.c.story_date, migrated.c.payload)
+                .where(migrated.c.run_id == run_id)
+                .order_by(migrated.c.generated_at)
+            )
+        )
+    assert rows[0].story_date.isoformat() == "2026-08-02"
+    assert rows[0].payload["canonical"] is True
+    assert rows[1].story_date is None
+    assert rows[1].payload["canonical"] is False
     engine.dispose()
 
 

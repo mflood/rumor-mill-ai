@@ -33,7 +33,14 @@ from rumor_mill.bootstrap import _bootstrap_session
 from rumor_mill.config import Settings
 from rumor_mill.deployment import smoke
 from rumor_mill.engine.lighthouse_pipeline import LighthouseStoryHandler, RoutineTimeError
-from rumor_mill.engine.ports import JobRecord, JobStatus, RunRecord, RunStatus, WorldRecord
+from rumor_mill.engine.ports import (
+    ClockMode,
+    JobRecord,
+    JobStatus,
+    RunRecord,
+    RunStatus,
+    WorldRecord,
+)
 from rumor_mill.main import create_app
 from rumor_mill.observability import MetricsRegistry
 from rumor_mill.worker import SimulationWorker, main, worker_id
@@ -180,6 +187,34 @@ def test_production_readiness_requires_a_worker_heartbeat(tmp_path: Path) -> Non
     assert ready.status_code == 200
     assert ready.json()["components"]["worker"] == "ok"
     assert ready.json()["components"]["story_pipeline"] == "ok"
+    assert ready.json()["components"]["recap_pipeline"] == "ok"
+    factory = create_session_factory(engine)
+    world = WorldRecord(UUID(int=801), "lighthouse", 1, {}, START)
+    run = RunRecord(
+        UUID(int=802),
+        world.id,
+        RunStatus.RUNNING,
+        7,
+        START,
+        clock_mode=ClockMode.MANUAL,
+    )
+    seed_run(SqlAlchemyUnitOfWork(factory), world, run)
+    with factory.begin() as database:
+        database.add(
+            JobModel(
+                run_id=run.id,
+                idempotency_key="readiness-dead-recap",
+                kind="lighthouse_daily_recap",
+                status="dead",
+                scheduled_at=START,
+                available_at=START,
+                attempts=5,
+                payload={"story_date": START.date().isoformat()},
+            )
+        )
+    recap_failed = client.get("/health/ready")
+    assert recap_failed.status_code == 503
+    assert recap_failed.json()["components"]["recap_pipeline"] == "degraded"
     engine.dispose()
 
 
@@ -645,7 +680,7 @@ def test_deployment_smoke_checks_health_assets_and_public_pages() -> None:
         url = request.full_url if hasattr(request, "full_url") else str(request)
         requested.append(url)
         if url.endswith("/health/ready"):
-            body = b'{"status":"ok","components":{"story_pipeline":"ok"}}'
+            body = b'{"status":"ok","components":{"story_pipeline":"ok","recap_pipeline":"ok"}}'
         elif url.endswith(("/health/live", "/health/product")):
             body = b'{"status":"ok"}'
         elif url.endswith("/lighthouse/feedback"):
@@ -684,14 +719,20 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
 
     healthy_prefix = [
         response(200, b'{"status":"ok"}'),
-        response(200, b'{"status":"ok","components":{"story_pipeline":"ok"}}'),
+        response(
+            200,
+            b'{"status":"ok","components":{"story_pipeline":"ok","recap_pipeline":"ok"}}',
+        ),
         response(200, b'{"status":"ok"}'),
         response(200, b"css"),
         response(200, b"svg"),
         response(200, b'property="og:title"'),
         response(200, b"Share feedback on GitHub"),
     ]
-    ready = response(200, b'{"status":"ok","components":{"story_pipeline":"ok"}}')
+    ready = response(
+        200,
+        b'{"status":"ok","components":{"story_pipeline":"ok","recap_pipeline":"ok"}}',
+    )
     playable_today = (
         b'property="og:title" data-primary-recommendation="true" '
         b'href="/lighthouse/runs/123/town/harbor"'
@@ -701,7 +742,7 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
         ([response(200, b'{"status":"degraded"}')], "/health/live reported degraded"),
         (
             [response(200, b'{"status":"ok"}'), response(200, b'{"status":"ok"}')],
-            "/health/ready did not verify autonomous story progression",
+            "/health/ready did not verify autonomous story and recap progression",
         ),
         (
             [

@@ -20,11 +20,13 @@ def smoke(base_url: str, opener: Callable[..., Any] | None = None) -> None:
             payload = json.loads(response.read())
             if payload["status"] != "ok":
                 raise RuntimeError(f"{path} reported {payload['status']}")
-            if (
-                path == "/health/ready"
-                and payload.get("components", {}).get("story_pipeline") != "ok"
+            if path == "/health/ready" and (
+                payload.get("components", {}).get("story_pipeline") != "ok"
+                or payload.get("components", {}).get("recap_pipeline") != "ok"
             ):
-                raise RuntimeError("/health/ready did not verify autonomous story progression")
+                raise RuntimeError(
+                    "/health/ready did not verify autonomous story and recap progression"
+                )
     for path in ("/static/lighthouse.css", "/static/favicon.svg"):
         with opener(f"{base_url}{path}", timeout=15) as response:
             if response.status != 200 or not response.read():

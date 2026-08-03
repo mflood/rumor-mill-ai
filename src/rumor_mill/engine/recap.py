@@ -6,6 +6,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rumor_mill.engine.domain import ArtifactKind
+
+PUBLIC_RECAP_SOURCE_KINDS = tuple(
+    kind.value for kind in ArtifactKind if kind is not ArtifactKind.DAILY_RECAP
+)
+
 
 class RecapSource(BaseModel):
     """A presentation-layer candidate; hidden domain records are never accepted."""
@@ -47,7 +53,11 @@ class DailyRecap(BaseModel):
     state: str
 
     def artifact_payload(self) -> dict[str, Any]:
-        return {"visibility": "public", "recap": self.model_dump(mode="json")}
+        return {
+            "visibility": "public",
+            "canonical": True,
+            "recap": self.model_dump(mode="json"),
+        }
 
 
 def build_daily_recap(story_date: date, sources: list[RecapSource]) -> DailyRecap:
