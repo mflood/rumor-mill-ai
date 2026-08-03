@@ -187,6 +187,9 @@ class CharacterResponse(ApiModel):
     location_id: str | None
     available: bool
     availability: str
+    public_whereabouts: str
+    private_contact_mode: Literal["live", "asynchronous", "delayed", "unavailable"]
+    private_contact_status: str
 
 
 class StartConversationRequest(ApiModel):
@@ -663,8 +666,10 @@ def create_app(
             )
             action = "Read the previous dispatch"
             href = f"/lighthouse/runs/{run.id}/archive"
-        elif recap_artifact is not None and _aware(recap_artifact.generated_at) > _aware(
-            visitor.last_seen_at
+        elif (
+            recap is not None
+            and recap_artifact is not None
+            and _aware(recap_artifact.generated_at) > _aware(visitor.last_seen_at)
         ):
             title = "Since your last visit"
             body = (
@@ -889,9 +894,11 @@ def create_app(
     ) -> Response:
         """Render the latest spoiler-safe daily briefing without requiring JavaScript."""
         visitor = optional_visitor(database, token)
+        if visitor is None:
+            return RedirectResponse("/lighthouse", status_code=status.HTTP_303_SEE_OTHER)
         run_model = (
             database.get(RunModel, visitor.active_run_id)
-            if visitor is not None and visitor.active_run_id is not None
+            if visitor.active_run_id is not None
             else None
         )
         if run_model is None or run_model.status != RunStatus.RUNNING:
@@ -1482,19 +1489,20 @@ def create_app(
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
     ) -> Page[CharacterResponse]:
-        _, world = load_run(run_id)
+        run, world = load_run(run_id)
         records = [
             CharacterResponse(
                 id=item.id,
                 name=item.name,
                 description=item.description,
                 location_id=item.home_location_id,
-                available=item.home_location_id is not None,
-                availability=(
-                    "Available for a private word"
-                    if item.home_location_id is not None
-                    else "Away from public contact"
+                available=private_contact_mode(item) != "unavailable",
+                availability=private_contact_copy(
+                    item, publicly_present=character_availability(run, world, item)[1] is not None
                 ),
+                public_whereabouts=character_availability(run, world, item)[0],
+                private_contact_mode=private_contact_mode(item),
+                private_contact_status=private_line_status(item),
             )
             for item in world.cast
         ]
@@ -1695,7 +1703,38 @@ def create_app(
             return f"At {presence.location_name} · {presence.activity}", presence.location_id
         if character.home_location_id is None:
             return "Whereabouts unknown", None
-        return "Away from public contact", character.home_location_id
+        return "Away from public locations", None
+
+    def private_contact_mode(
+        character: AuthoredCharacter,
+    ) -> Literal["live", "asynchronous", "delayed", "unavailable"]:
+        if character.private_contact_mode is not None:
+            return character.private_contact_mode
+        return "live" if character.home_location_id is not None else "unavailable"
+
+    def private_contact_copy(character: AuthoredCharacter, *, publicly_present: bool) -> str:
+        mode = private_contact_mode(character)
+        if mode == "unavailable":
+            return (
+                f"{character.name} cannot be reached right now. "
+                "Try again after the next town update."
+            )
+        if mode == "delayed":
+            return "You can message them privately; their reply may be delayed."
+        if mode == "asynchronous":
+            return "You can leave them a private message for an asynchronous reply."
+        if publicly_present:
+            return "Available for a live private exchange."
+        return f"{character.name} isn't at a public location, but you can message them privately."
+
+    def private_line_status(character: AuthoredCharacter) -> str:
+        mode = private_contact_mode(character)
+        return {
+            "live": "This is a live private exchange. Replies appear here as they arrive.",
+            "asynchronous": "This exchange is asynchronous. Send a message and return here for replies.",
+            "delayed": "This private line accepts messages now, but replies may be delayed.",
+            "unavailable": "This private line is presently unavailable.",
+        }[mode]
 
     def public_connections(world: WorldDefinition, character_id: str) -> list[AuthoredCharacter]:
         connected_ids: set[str] = set()
@@ -1764,6 +1803,8 @@ def create_app(
         state_model = visitor_character_state(database, visitor.id, run_id, character.id)
         recap_seen = appeared_in_public_recap(database, run_id, character.id)
         availability, location_id = character_availability(run, world, character)
+        contact_mode = private_contact_mode(character)
+        contact_copy = private_contact_copy(character, publicly_present=location_id is not None)
         connections = public_connections(world, character.id)
         connections_markup = (
             "".join(
@@ -1794,9 +1835,9 @@ def create_app(
             else escape(availability)
         )
         talk_markup = (
-            f'<form action="/lighthouse/runs/{run.id}/talk/{escape(character.id)}" method="post"><button class="primary-action" type="submit">Ask for a private word <span aria-hidden="true">→</span></button></form>'
-            if character.home_location_id is not None
-            else '<p class="offline-note">A private line cannot be opened while their whereabouts are unknown.</p>'
+            f'<section class="private-contact" aria-labelledby="private-contact-title"><h2 id="private-contact-title">Private contact</h2><p>{escape(contact_copy)}</p><form action="/lighthouse/runs/{run.id}/talk/{escape(character.id)}" method="post"><button class="primary-action" type="submit">Message {escape(character.name)} privately <span aria-hidden="true">→</span></button></form></section>'
+            if contact_mode != "unavailable"
+            else f'<section class="private-contact" aria-labelledby="private-contact-title"><h2 id="private-contact-title">Private contact</h2><p class="offline-note">{escape(contact_copy)}</p><button class="primary-action" type="button" disabled>Private line unavailable</button></section>'
         )
         content = f"""<article class="profile-file" aria-labelledby="profile-name"><a class="back-link" href="/lighthouse/runs/{run.id}/people">← Return to the cast ledger</a><header><div class="profile-monogram" aria-hidden="true">{escape(character.name[0])}</div><div><p class="eyebrow">Public character file</p><h1 id="profile-name">{escape(character.name)}</h1><p class="profile-bio">{escape(character.description)}</p></div></header><div class="profile-facts"><section><h2>Voice</h2><p>{escape(character.public_voice or "Their voice is not publicly known yet.")}</p></section><section><h2>Whereabouts</h2><p>{location_markup}</p></section><section><h2>Known connections</h2><ul>{connections_markup}</ul></section></div><aside class="margin-notes" aria-labelledby="notes-title"><p class="eyebrow">Written from your visit</p><h2 id="notes-title">What stands between you</h2><p class="relationship-cue">{escape(relationship)}</p><h3>Your remembered exchanges</h3><ul>{memory_markup}</ul></aside>{talk_markup}</article>"""
         return HTMLResponse(profile_shell(run, character.name, content))
@@ -2055,9 +2096,12 @@ def create_app(
     ) -> ConversationContext:
         run, world = load_run(model.run_id)
         character = next(item for item in world.cast if item.id == model.participant_ids[0])
-        if character.home_location_id is None:  # pragma: no cover - blocked at conversation start
-            raise HTTPException(status.HTTP_409_CONFLICT, "character is away from public contact")
-        location = next(item for item in world.locations if item.id == character.home_location_id)
+        if private_contact_mode(character) == "unavailable":  # pragma: no cover
+            raise HTTPException(status.HTTP_409_CONFLICT, "character cannot be reached right now")
+        location = next(
+            (item for item in world.locations if item.id == character.home_location_id),
+            world.locations[0],
+        )
         namespace = uuid5(NAMESPACE_URL, world.metadata.id)
         known_truth = [item for item in world.truth if character.id in item.character_ids]
         known_secrets = [item for item in world.secrets if character.id in item.known_by_ids]
@@ -2261,8 +2305,8 @@ def create_app(
         character = next((item for item in world.cast if item.id == request.character_id), None)
         if character is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "character not found")
-        if character.home_location_id is None:
-            raise HTTPException(status.HTTP_409_CONFLICT, "character is away from public contact")
+        if private_contact_mode(character) == "unavailable":
+            raise HTTPException(status.HTTP_409_CONFLICT, "character cannot be reached right now")
         model = ConversationModel(
             run_id=run_id,
             visitor_id=visitor.id,
@@ -2300,19 +2344,26 @@ def create_app(
         visitor: Annotated[VisitorModel, Depends(require_visitor)],
     ) -> HTMLResponse:
         del visitor
-        _, world = load_run(run_id)
+        run, world = load_run(run_id)
         cards = []
         for character in world.cast:
-            available = character.home_location_id is not None
-            label = "Ask for a private word" if available else "Away from public contact"
+            available = private_contact_mode(character) != "unavailable"
+            label = (
+                f"Message {character.name} privately" if available else "Private line unavailable"
+            )
             disabled = "" if available else " disabled"
+            contact_copy = private_contact_copy(
+                character,
+                publicly_present=character_availability(run, world, character)[1] is not None,
+            )
             cards.append(
                 '<article class="contact-card">'
                 f"<h2>{escape(character.name)}</h2>"
                 f"<p>{escape(character.description)}</p>"
+                f'<p class="contact-status">{escape(contact_copy)}</p>'
                 '<form method="post" action="/lighthouse/runs/'
                 f'{run_id}/talk/{escape(character.id)}">'
-                f'<button type="submit"{disabled}>{label}</button></form></article>'
+                f'<button type="submit"{disabled}>{escape(label)}</button></form></article>'
             )
         page = (web_root / "talk.html").read_text(encoding="utf-8")
         return HTMLResponse(page.replace("<!-- CHARACTER_CARDS -->", "".join(cards)))
@@ -2358,9 +2409,9 @@ def create_app(
         character = next(item for item in world.cast if item.id == model.participant_ids[0])
         page = (web_root / "conversation.html").read_text(encoding="utf-8")
         return HTMLResponse(
-            page.replace("{{ conversation_id }}", str(model.id)).replace(
-                "{{ character_name }}", escape(character.name)
-            )
+            page.replace("{{ conversation_id }}", str(model.id))
+            .replace("{{ character_name }}", escape(character.name))
+            .replace("{{ line_status }}", escape(private_line_status(character)))
         )
 
     @app.get(

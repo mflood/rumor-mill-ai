@@ -14,7 +14,7 @@
     <main class="radio-room" data-conversation-id="{{ conversation_id }}">
       <header class="radio-room__heading"><p class="eyebrow">A private word with</p><h1>{{ character_name }}</h1><p>Only you and {{ character_name }} can read this exchange.</p></header>
       <ol class="signal-wire" id="messages" aria-live="polite" aria-label="Conversation history"></ol>
-      <p class="line-status" id="line-status" role="status">The line is ready.</p>
+      <p class="line-status" id="line-status" role="status">{{ line_status }}</p>
       <form class="dispatch-console" id="composer" aria-busy="false">
         <label for="message">What do you ask?</label>
         <textarea id="message" maxlength="4000" required rows="3"></textarea>

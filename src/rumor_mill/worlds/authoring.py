@@ -34,6 +34,7 @@ class AuthoredCharacter(AuthoringModel):
     description: str = Field(min_length=1, max_length=2_000)
     home_location_id: Slug | None = None
     public_voice: str | None = Field(default=None, min_length=1, max_length=500)
+    private_contact_mode: Literal["live", "asynchronous", "delayed", "unavailable"] | None = None
 
 
 class AuthoredLocation(AuthoringModel):
