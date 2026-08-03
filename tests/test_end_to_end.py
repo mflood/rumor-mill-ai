@@ -122,6 +122,15 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
             assert turn.json()["messages"][-1]["content"] == (
                 "The archive bell rang twice after midnight."
             )
+            retried = first_visit.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "content": "What happened after midnight?",
+                    "client_message_id": turn.json()["messages"][0]["id"],
+                },
+            )
+            assert retried.status_code == 200
+            assert sum(message["role"] == "visitor" for message in retried.json()["messages"]) == 1
 
             with factory() as database:
                 database.add(

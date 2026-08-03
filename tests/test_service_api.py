@@ -1167,6 +1167,11 @@ def test_character_picker_and_conversation_page_are_server_rendered(api) -> None
     script = client.get("/static/conversation.js")
     assert "ReadableStream" not in script.text  # uses the widely supported reader API directly
     assert "getReader()" in script.text
+    assert "submit.disabled = submitting" in script.text
+    assert 'form.setAttribute("aria-busy", String(submitting))' in script.text
+    assert "if (!content || isSubmitting) return" in script.text
+    assert "pendingSubmission = null" in script.text
+    assert 'aria-busy="false"' in page.text
 
 
 def test_unavailable_character_cannot_start_a_conversation(api) -> None:  # type: ignore[no-untyped-def]
