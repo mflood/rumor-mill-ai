@@ -142,6 +142,35 @@ invocation. Alerts should use only the bounded `story_pipeline` readiness compon
 `story_pipeline_progressing`/`story_queue_depth` metrics. Never label alerts with job/run UUIDs,
 visitor data, prompts, provider responses, or generated content.
 
+### Worker log diagnosis
+
+Worker logs are single-line JSON. A dyno lifetime begins with one `simulation_worker_started` INFO
+event. `simulation_run_advanced` records the run correlation, tick count, jobs enqueued, and whether
+catch-up hit its configured cap. `story_jobs_polled` appears only when work was claimed or remains
+pending and reports `claimed`, `completed`, `retried`, `dead`, and `pending` counts; idle five-second
+polls are intentionally silent.
+
+Each unsuccessful durable attempt emits `durable_job_attempt_failed` at WARNING with the job/run
+correlation, job kind, attempt limit, resulting `failed` or `dead` state, normalized error category,
+and bounded backoff/retry timing. `durable_job_completed` uses the same job correlation and attempt
+count, so a later success can be matched to earlier warnings. Provider `model_generation_failed` or
+`model_stream_failed` events include a model-call ID and inherit the job correlation when called by
+the worker. These events never contain job payloads, prompts, responses, generated content, visitor
+or conversation data, credentials, or raw exception text.
+
+Use this read-only sequence before changing worker or job state:
+
+```shell
+heroku ps -a <app-name>
+heroku logs --tail --ps worker -a <app-name>
+curl -fsS https://<app-name>.herokuapp.com/health/ready
+```
+
+Start at `simulation_worker_started`, follow a `run:<uuid>` correlation through advancement and
+enqueue counts, then follow a `job:<uuid>` through attempt warnings, provider errors, and completion.
+Compare the final queue counts with `/health/ready` and the operator console. Do not paste private
+payloads into log searches or add run/job/call identifiers as metric labels.
+
 ### Daily recap closure and missed-day recovery
 
 The worker publishes a recap only after its story date has closed in simulation time. A date with

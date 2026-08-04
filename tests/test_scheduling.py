@@ -1,5 +1,7 @@
 """Simulation clock and durable scheduling tests."""
 
+import json
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -31,6 +33,7 @@ from rumor_mill.engine.ports import (
     WorldRecord,
 )
 from rumor_mill.engine.scheduling import ScheduledWork, SimulationScheduler, SystemClock
+from rumor_mill.observability import JsonFormatter
 
 ROOT = Path(__file__).parents[1]
 pytestmark = pytest.mark.integration
@@ -512,7 +515,9 @@ def test_worker_claims_completes_and_never_runs_job_twice(scheduler_database) ->
     assert applied == [job_id]
 
 
-def test_worker_reclaims_expired_lease_and_backs_off_failures(scheduler_database) -> None:  # type: ignore[no-untyped-def]
+def test_worker_reclaims_expired_lease_and_backs_off_failures(
+    scheduler_database, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
     factory = scheduler_database
     run = seed(factory)
     job_id = add_job(factory, run, max_attempts=2)
@@ -536,11 +541,112 @@ def test_worker_reclaims_expired_lease_and_backs_off_failures(scheduler_database
         base_backoff=timedelta(seconds=30),
         clock=lambda: now,
     )
+    logged: dict[str, object] = {}
+    monkeypatch.setattr(
+        "rumor_mill.engine.jobs.logger.warning",
+        lambda event, *, extra: logged.update(event=event, **extra),
+    )
     result = worker.run_once()
     assert result.job is not None
     assert result.job.id == job_id
     assert result.job.status is JobStatus.DEAD
-    assert result.job.error == "RuntimeError: provider unavailable"
+    assert result.job.error == "RuntimeError"
+    assert logged["event"] == "durable_job_attempt_failed"
+    assert logged["resulting_status"] == "dead"
+    assert logged["attempt"] == logged["max_attempts"] == 2
+    assert logged["backoff_seconds"] == 60
+    assert logged["retry_at"] is None
+
+
+def test_job_attempt_logs_are_correlated_bounded_and_privacy_safe(
+    scheduler_database, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    factory = scheduler_database
+    run = seed(factory)
+    private_values = (
+        "private-payload",
+        "secret-prompt",
+        "provider-response",
+        "visitor-identity",
+        "credential-value",
+    )
+    job_id = uuid4()
+    with SqlAlchemyUnitOfWork(factory) as unit_of_work:
+        unit_of_work.jobs.add_once(
+            JobRecord(
+                job_id,
+                run.id,
+                f"test:{job_id}",
+                "test",
+                JobStatus.PENDING,
+                START,
+                {"payload": private_values[0], "prompt": private_values[1]},
+                max_attempts=3,
+            )
+        )
+        unit_of_work.commit()
+
+    clock = FixedClock(START)
+    calls = 0
+
+    def flaky(job: JobRecord):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError(" ".join(private_values[2:]))
+        return lambda unit_of_work: {"response": private_values[2]}
+
+    worker = DurableJobWorker(
+        lambda: SqlAlchemyUnitOfWork(factory),
+        {"test": flaky},
+        worker_id="worker",
+        base_backoff=timedelta(seconds=30),
+        clock=clock.now,
+    )
+    records: list[dict[str, object]] = []
+
+    def capture(level: int):  # type: ignore[no-untyped-def]
+        def emit(event: str, *, extra: dict[str, object]) -> None:
+            record = logging.LogRecord(
+                "rumor_mill.engine.jobs", level, __file__, 1, event, (), None
+            )
+            for key, value in extra.items():
+                setattr(record, key, value)
+            records.append(json.loads(JsonFormatter().format(record)))
+
+        return emit
+
+    monkeypatch.setattr("rumor_mill.engine.jobs.logger.warning", capture(logging.WARNING))
+    monkeypatch.setattr("rumor_mill.engine.jobs.logger.info", capture(logging.INFO))
+    failed = worker.run_once()
+    clock.value += timedelta(seconds=30)
+    completed = worker.run_once()
+
+    assert failed.job is not None and failed.job.status is JobStatus.FAILED
+    assert completed.completed and completed.job is not None
+    assert [record["event"] for record in records] == [
+        "durable_job_attempt_failed",
+        "durable_job_completed",
+    ]
+    assert records[0] == {
+        **{key: records[0][key] for key in ("timestamp", "level", "logger")},
+        "event": "durable_job_attempt_failed",
+        "correlation_id": f"job:{job_id}",
+        "job_id": str(job_id),
+        "run_id": str(run.id),
+        "error_category": "RuntimeError",
+        "job_kind": "test",
+        "attempt": 1,
+        "max_attempts": 3,
+        "resulting_status": "failed",
+        "backoff_seconds": 30,
+        "retry_at": (START + timedelta(seconds=30)).isoformat(),
+    }
+    assert records[1]["correlation_id"] == f"job:{job_id}"
+    assert records[1]["attempt"] == 2
+    assert records[1]["resulting_status"] == "completed"
+    rendered = json.dumps(records)
+    assert all(value not in rendered for value in private_values)
 
 
 def test_failed_job_can_be_inspected_and_safely_retried(scheduler_database) -> None:  # type: ignore[no-untyped-def]

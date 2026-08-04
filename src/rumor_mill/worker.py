@@ -32,7 +32,13 @@ from rumor_mill.engine.recap_publication import (
     DailyRecapPlanner,
 )
 from rumor_mill.engine.scheduling import SimulationScheduler
-from rumor_mill.observability import MetricsRegistry, configure_json_logging, observed_job
+from rumor_mill.observability import (
+    MetricsRegistry,
+    bind_correlation,
+    configure_json_logging,
+    correlation_id,
+    observed_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +108,7 @@ class SimulationWorker:
         advanced = 0
         jobs_enqueued = 0
         for run in runs:
+            correlation = bind_correlation(f"run:{run.id}")
             try:
                 result = scheduler.advance(run.id)
             except Exception as exc:
@@ -113,18 +120,24 @@ class SimulationWorker:
                     diagnostic["error_detail"] = str(exc)
                 logger.exception("simulation_run_advance_failed", extra=diagnostic)
                 continue
+            finally:
+                correlation_id.reset(correlation)
             if result.ticks:
                 advanced += 1
                 jobs_enqueued += result.jobs_enqueued
-                logger.info(
-                    "simulation_run_advanced",
-                    extra={
-                        "run_id": str(run.id),
-                        "ticks": result.ticks,
-                        "jobs_enqueued": result.jobs_enqueued,
-                        "catch_up_limited": result.catch_up_limited,
-                    },
-                )
+                correlation = bind_correlation(f"run:{run.id}")
+                try:
+                    logger.info(
+                        "simulation_run_advanced",
+                        extra={
+                            "run_id": str(run.id),
+                            "ticks": result.ticks,
+                            "jobs_enqueued": result.jobs_enqueued,
+                            "catch_up_limited": result.catch_up_limited,
+                        },
+                    )
+                finally:
+                    correlation_id.reset(correlation)
 
         with self._unit_of_work() as unit_of_work:
             recap_runs = unit_of_work.runs.list_recap_candidates(limit=self._run_batch_size)
@@ -177,7 +190,10 @@ class SimulationWorker:
             self._metrics.increment("story_jobs_total", value, state=state)
         self._metrics.set("story_jobs_pending", pending)
         if counts["claimed"] or pending:
-            logger.info("story_jobs_polled", extra={**counts, "pending": pending})
+            logger.info(
+                "story_jobs_polled",
+                extra={"worker_id": self._worker_id, **counts, "pending": pending},
+            )
         with self._session_factory.begin() as database:
             heartbeat = database.get(WorkerHeartbeatModel, self._worker_id)
             assert heartbeat is not None

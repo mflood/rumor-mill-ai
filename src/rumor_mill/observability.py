@@ -36,10 +36,23 @@ class JsonFormatter(logging.Formatter):
     """Format records as single-line JSON without inspecting message payloads."""
 
     _fields = (
+        "worker_id",
+        "run_id",
+        "call_id",
         "provider",
         "model",
         "purpose",
         "error_code",
+        "error_category",
+        "job_kind",
+        "attempt",
+        "max_attempts",
+        "resulting_status",
+        "backoff_seconds",
+        "retry_at",
+        "ticks",
+        "jobs_enqueued",
+        "catch_up_limited",
         "method",
         "path",
         "status_code",
@@ -72,11 +85,18 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_json_logging() -> None:
-    """Configure application logs for production without duplicating handlers."""
+    """Emit application INFO logs without enabling noisy dependency INFO logs."""
 
     root = logging.getLogger()
     if not root.handlers:
         root.addHandler(logging.StreamHandler())
+    root.setLevel(logging.WARNING)
+    application = logging.getLogger("rumor_mill")
+    application.disabled = False
+    application.setLevel(logging.INFO)
+    for name, candidate in logging.root.manager.loggerDict.items():
+        if name.startswith("rumor_mill.") and isinstance(candidate, logging.Logger):
+            candidate.disabled = False
     formatter = JsonFormatter()
     for handler in root.handlers:
         handler.setFormatter(formatter)
