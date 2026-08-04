@@ -36,6 +36,7 @@ def test_lighthouse_shell_is_server_rendered_and_semantic() -> None:
     assert "The story continues while you are away" not in response.text
     assert "Enter Greyhaven" not in response.text
     assert response.text.count('aria-disabled="true"') == 3
+    assert response.text.count('href="/lighthouse/help">How to play</a>') == 1
     assert "prior visitor data is safe" in response.text
     assert "no visitor record or cookie will be created" in response.text
 
@@ -63,6 +64,34 @@ def test_failed_lighthouse_entry_persists_no_visitor_or_cookie(tmp_path: Path) -
     assert response.headers["location"] == "/lighthouse"
     assert "rm_visitor" not in response.cookies
     assert "set-cookie" not in response.headers
+    with factory() as database:
+        assert database.query(VisitorModel).count() == 0
+    engine.dispose()
+
+
+def test_lighthouse_help_is_semantic_session_free_and_honest_between_seasons(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'empty-help.db'}"
+    engine = create_database_engine(database_url)
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    empty_app = create_app(Settings(database_url=database_url), factory)
+
+    with TestClient(empty_app) as client:
+        response = client.get("/lighthouse/help")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "set-cookie" not in response.headers
+    assert '<a class="skip-link" href="#help">' in response.text
+    assert '<nav aria-label="Help navigation">' in response.text
+    assert response.text.count("<h1>") == 1
+    assert "<h1>How to play The Lighthouse</h1>" in response.text
+    assert "No season:" in response.text
+    assert "no story is progressing" in response.text
+    assert "Core story routes appear when Greyhaven is available" in response.text
+    assert "<script" not in response.text
     with factory() as database:
         assert database.query(VisitorModel).count() == 0
     engine.dispose()

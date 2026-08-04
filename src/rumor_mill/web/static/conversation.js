@@ -37,7 +37,7 @@
 
   const load = async () => {
     const response = await fetch(`/api/v1/conversations/${id}`, { credentials: "same-origin" });
-    if (!response.ok) { status.textContent = "This private line is no longer available."; return; }
+    if (!response.ok) { status.textContent = "This private conversation is no longer available."; return; }
     const conversation = await response.json();
     list.replaceChildren();
     room.dataset.runId = conversation.run_id;
