@@ -66,6 +66,7 @@ from rumor_mill.engine.conversation import (
     ConversationEventKind,
     ConversationHistoryMessage,
     ConversationHistoryRole,
+    ConversationLocationContext,
     ConversationMemory,
     ConversationSafetyError,
     DisclosureBoundary,
@@ -2933,11 +2934,21 @@ def create_app(
         character = next(item for item in world.cast if item.id == model.participant_ids[0])
         if private_contact_mode(character) == "unavailable":  # pragma: no cover
             raise HTTPException(status.HTTP_409_CONFLICT, "character cannot be reached right now")
-        location = next(
-            (item for item in world.locations if item.id == character.home_location_id),
-            world.locations[0],
+        simulation_time = _aware(run.simulation_time or run.started_at)
+        location_state = TownState(world).character_location_state(
+            character.id,
+            day=story_day(run),
+            at=simulation_time.time().replace(tzinfo=None),
         )
         namespace = uuid5(NAMESPACE_URL, world.metadata.id)
+
+        def scoped_location_id(location_id: str | None) -> LocationId | None:
+            return (
+                LocationId(uuid5(namespace, f"location:{location_id}"))
+                if location_id is not None
+                else None
+            )
+
         known_truth = [item for item in world.truth if character.id in item.character_ids]
         known_secrets = [item for item in world.secrets if character.id in item.known_by_ids]
         truth_beliefs = tuple(
@@ -2977,8 +2988,14 @@ def create_app(
             character_id=CharacterId(uuid5(namespace, f"character:{character.id}")),
             character_name=character.name,
             persona=character.description,
-            location_id=LocationId(uuid5(namespace, f"location:{location.id}")),
-            location_name=location.name,
+            location=ConversationLocationContext(
+                home_location_id=scoped_location_id(location_state.home_location_id),
+                home_location_name=location_state.home_location_name,
+                current_location_id=scoped_location_id(location_state.current_location_id),
+                current_location_name=location_state.current_location_name,
+                publicly_present=location_state.publicly_present,
+                private_contact_mode=private_contact_mode(character),
+            ),
             goals=("Respond in character without exposing private system state.",),
             beliefs=beliefs,
             relevant_memories=memories,
@@ -2995,7 +3012,7 @@ def create_app(
                     ),
                 ),
             ),
-            occurred_at=run.simulation_time or run.started_at,
+            occurred_at=simulation_time,
         )
 
     def complete_turn(

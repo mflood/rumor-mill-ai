@@ -5,7 +5,7 @@ from datetime import time
 from pydantic import BaseModel, ConfigDict
 
 from rumor_mill.engine.domain import Visibility
-from rumor_mill.worlds.authoring import WorldDefinition
+from rumor_mill.worlds.authoring import AuthoredRoutine, WorldDefinition
 
 
 class PublicPresence(BaseModel):
@@ -20,8 +20,21 @@ class PublicPresence(BaseModel):
     activity: str
 
 
+class CharacterLocationState(BaseModel):
+    """Authoritative authored whereabouts, kept distinct from residence and visibility."""
+
+    model_config = ConfigDict(frozen=True)
+
+    character_id: str
+    home_location_id: str | None
+    home_location_name: str | None
+    current_location_id: str | None
+    current_location_name: str | None
+    publicly_present: bool
+
+
 class TownState:
-    """Query authored presence without exposing private or engine-only routines."""
+    """Query authored presence through visibility-appropriate state snapshots."""
 
     def __init__(self, world: WorldDefinition) -> None:
         self._world = world
@@ -29,13 +42,9 @@ class TownState:
         self._locations = {location.id: location for location in world.locations}
 
     def public_presence(self, *, day: int, at: time) -> tuple[PublicPresence, ...]:
-        self._validate_day(day)
-
         presences = []
-        for routine in self._world.routines:
+        for routine in self._active_routines(day=day, at=at):
             if routine.visibility is not Visibility.PUBLIC:
-                continue
-            if day not in routine.days or not routine.start_time <= at < routine.end_time:
                 continue
             character = self._characters[routine.character_id]
             location = self._locations[routine.location_id]
@@ -49,6 +58,46 @@ class TownState:
                 )
             )
         return tuple(sorted(presences, key=lambda item: (item.location_name, item.character_name)))
+
+    def character_location_state(
+        self, character_id: str, *, day: int, at: time
+    ) -> CharacterLocationState:
+        """Resolve current location from active routines, never from a character's home.
+
+        Routine windows are half-open: the start time is active and the end time is not.
+        A routine of any visibility is authoritative for the participating character's private
+        context, while ``publicly_present`` is true only for an active public routine.
+        """
+
+        self._validate_day(day)
+        if character_id not in self._characters:
+            raise KeyError(character_id)
+        character = self._characters[character_id]
+        active = tuple(
+            routine
+            for routine in self._active_routines(day=day, at=at)
+            if routine.character_id == character_id
+        )
+        active_location_ids = {routine.location_id for routine in active}
+        if len(active_location_ids) > 1:
+            raise ValueError(f"character {character_id!r} has ambiguous current location")
+        current_location_id = next(iter(active_location_ids), None)
+        current_location = (
+            self._locations[current_location_id] if current_location_id is not None else None
+        )
+        home_location = (
+            self._locations[character.home_location_id]
+            if character.home_location_id is not None
+            else None
+        )
+        return CharacterLocationState(
+            character_id=character.id,
+            home_location_id=home_location.id if home_location is not None else None,
+            home_location_name=home_location.name if home_location is not None else None,
+            current_location_id=current_location.id if current_location is not None else None,
+            current_location_name=current_location.name if current_location is not None else None,
+            publicly_present=any(routine.visibility is Visibility.PUBLIC for routine in active),
+        )
 
     def public_presence_at(
         self, location_id: str, *, day: int, at: time
@@ -96,6 +145,16 @@ class TownState:
             ):
                 return route.minutes
         return None
+
+    def _active_routines(self, *, day: int, at: time) -> tuple[AuthoredRoutine, ...]:
+        """Return the shared authoritative set of active half-open routine windows."""
+
+        self._validate_day(day)
+        return tuple(
+            routine
+            for routine in self._world.routines
+            if day in routine.days and routine.start_time <= at < routine.end_time
+        )
 
     @staticmethod
     def _validate_day(day: int) -> None:
