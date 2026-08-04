@@ -318,9 +318,9 @@ def test_production_shaped_bootstrap_advances_executes_and_publishes_once(tmp_pa
         assert len(jobs) == 1
         assert jobs[0].status == "completed"
         assert len(scenes) == 1
-        assert len(artifacts) == 1
-        assert artifacts[0].kind == "story_card"
-        assert artifacts[0].title == "Dark Headland"
+        assert {artifact.kind for artifact in artifacts} == {"daily_recap", "story_card"}
+        story_card = next(artifact for artifact in artifacts if artifact.kind == "story_card")
+        assert story_card.title == "Dark Headland"
         assert heartbeat is not None and heartbeat.story_pipeline_ready
         assert heartbeat.last_clock_advanced_at is not None
         assert heartbeat.last_story_job_enqueued_at is not None

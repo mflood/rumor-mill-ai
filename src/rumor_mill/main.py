@@ -51,6 +51,11 @@ from rumor_mill.adapters.persistence.models import (
     WorkerHeartbeatModel,
     WorldModel,
 )
+from rumor_mill.adapters.persistence.published_recaps import (
+    PublishedRecapView,
+    latest_published_recap,
+    published_recaps,
+)
 from rumor_mill.adapters.providers import create_model_provider
 from rumor_mill.config import Settings, get_settings
 from rumor_mill.engine.conversation import (
@@ -716,21 +721,7 @@ def create_app(
                     .order_by(RunModel.started_at.desc(), RunModel.id)
                 ).unique()
             )
-            return [
-                run
-                for run in candidates
-                if any(
-                    artifact.payload.get("visibility", "public") == "public"
-                    and artifact.payload.get("canonical", True)
-                    and validated_recap(artifact) is not None
-                    for artifact in database.scalars(
-                        select(ArtifactModel).where(
-                            ArtifactModel.run_id == run.id,
-                            ArtifactModel.kind == "daily_recap",
-                        )
-                    )
-                )
-            ]
+            return [run for run in candidates if published_recaps(database, run.id)]
         except Exception:  # A database outage must still render an honest public shell.
             database.rollback()
             logger.exception("archive_availability_check_failed")
@@ -896,38 +887,12 @@ def create_app(
             f"<span data-dispatch-copy>Next public story update in {remaining_minutes} {unit}</span></p>"
         )
 
-    def latest_published_recap_artifact(database: Session, run_id: UUID) -> ArtifactModel | None:
-        artifacts = list(
-            database.scalars(
-                select(ArtifactModel).where(
-                    ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap"
-                )
-            )
-        )
-        valid: list[tuple[date, ArtifactModel]] = []
-        for artifact in artifacts:
-            if (
-                artifact.payload.get("visibility", "public") == "public"
-                and artifact.payload.get("canonical", True)
-                and "recap" in artifact.payload
-            ):
-                recap = validated_recap(artifact)
-                if recap is not None:
-                    valid.append((recap.story_date, artifact))
-        latest = max(
-            valid,
-            key=lambda item: (item[0], str(item[1].id)),
-            default=None,
-        )
-        return latest[1] if latest is not None else None
-
     def current_story_state(
         database: Session,
         run: RunRecord,
         visitor: VisitorModel,
-        recap_artifact: ArtifactModel | None,
+        recap: PublishedRecapView | None,
     ) -> str:
-        recap = validated_recap(recap_artifact)
         latest_failure = database.scalar(
             select(JobModel)
             .where(
@@ -939,11 +904,10 @@ def create_app(
             .limit(1)
         )
         failure_is_current = latest_failure is not None and (
-            recap_artifact is None
-            or _aware(latest_failure.scheduled_at) > _aware(recap_artifact.generated_at)
+            recap is None or _aware(latest_failure.scheduled_at) > _aware(recap.published_at)
         )
 
-        if failure_is_current:
+        if failure_is_current and recap is not None:
             title = "Today’s story update could not be prepared"
             body = (
                 "The latest public story update did not finish. Your progress and private "
@@ -951,11 +915,24 @@ def create_app(
             )
             action = "Read the previous story update"
             href = f"/lighthouse/runs/{run.id}/archive"
-        elif (
-            recap is not None
-            and recap_artifact is not None
-            and _aware(recap_artifact.generated_at) > _aware(visitor.last_seen_at)
-        ):
+        elif failure_is_current:
+            title = "Today’s story update could not be prepared"
+            body = (
+                "The public story update did not finish, and no earlier episode has been "
+                "published. Your progress and private conversations are safe. Explore the "
+                "current town state or return later."
+            )
+            action = "Explore the town"
+            href = f"/lighthouse/runs/{run.id}/town"
+        elif recap is not None and recap.state == "quiet_day":
+            title = "Quiet-day story update"
+            body = (
+                "Greyhaven published a quiet-day dispatch with no public scenes. Your progress "
+                "and private conversations are safe, and the dispatch remains in Archive."
+            )
+            action = "Read the quiet-day dispatch"
+            href = f"/lighthouse/runs/{run.id}/archive/{recap.id}"
+        elif recap is not None and _aware(recap.published_at) > _aware(visitor.last_seen_at):
             title = "Since your last visit"
             body = (
                 f"{len(recap.panels)} new public "
@@ -987,6 +964,43 @@ def create_app(
         <div><p class="eyebrow">Current story status</p><h2 id="current-state-heading">{escape(title)}</h2></div>
         <div><div class="story-state__current" role="status" aria-live="polite" aria-atomic="true"><p class="eyebrow">Active now</p><p>{escape(body)}</p><a class="primary-action" href="{escape(href)}">{escape(action)} <span aria-hidden="true">→</span></a></div><details><summary>How updates work</summary><p>The Lighthouse shows one current status here. Published public story updates may change while you are away; your conversations remain private and saved to this visit.</p></details></div>
       </section>'''
+
+    def dispatch_lead_markup(
+        run: RunRecord,
+        recap: PublishedRecapView | None,
+        episode_number: int,
+    ) -> dict[str, str]:
+        """Render Today metadata from exactly the recap whose panels appear below it."""
+        if recap is None:
+            return {
+                "<!-- DISPATCH_EYEBROW -->": '<p class="eyebrow">No published story update</p>',
+                "<!-- DISPATCH_NUMBER -->": '<p class="issue-number" aria-hidden="true">—</p>',
+                "<!-- DISPATCH_RETURN_NOTE -->": '<p class="return-note"><span aria-hidden="true">↳</span> No episode has been published yet. Explore the live town while Greyhaven prepares its first dispatch.</p>',
+                "<!-- DISPATCH_HEADLINE -->": "<h1>Greyhaven waits.</h1>",
+                "<!-- DISPATCH_DEK -->": '<p class="premise">There is no published story update to read yet.</p>',
+                "<!-- DISPATCH_READING_TIME -->": '<p class="reading-time">0 public scenes <span aria-hidden="true">·</span> No reading time yet</p>',
+            }
+        dispatch_day = max(1, min(14, (recap.story_date - run.started_at.date()).days + 1))
+        panel_count = len(recap.panels)
+        scene_label = "scene" if panel_count == 1 else "scenes"
+        timing = "Quiet-day dispatch" if panel_count == 0 else "About one minute"
+        return {
+            "<!-- DISPATCH_EYEBROW -->": (
+                f'<p class="eyebrow" data-dispatch-id="{recap.id}" '
+                f'data-story-date="{recap.story_date.isoformat()}">Latest published story '
+                f"update · Day {dispatch_day} · {recap.story_date.strftime('%B %d, %Y')}</p>"
+            ),
+            "<!-- DISPATCH_NUMBER -->": (
+                f'<p class="issue-number" aria-hidden="true">{episode_number:02}</p>'
+            ),
+            "<!-- DISPATCH_RETURN_NOTE -->": '<p class="return-note"><span aria-hidden="true">↳</span> Start here: read the latest published story update, visible to everyone</p>',
+            "<!-- DISPATCH_HEADLINE -->": f"<h1>{escape(recap.headline)}</h1>",
+            "<!-- DISPATCH_DEK -->": f'<p class="premise">{escape(recap.dek)}</p>',
+            "<!-- DISPATCH_READING_TIME -->": (
+                f'<p class="reading-time" data-panel-count="{panel_count}">{panel_count} public '
+                f'{scene_label} <span aria-hidden="true">·</span> {timing}</p>'
+            ),
+        }
 
     def load_run(run_id: UUID) -> tuple[RunRecord, WorldDefinition]:
         with uow_factory() as unit_of_work:
@@ -1261,25 +1275,20 @@ def create_app(
         document = document.replace(
             'Day 1 <span aria-hidden="true">·</span> Night', live_clock_markup(run)
         )
-        recap_artifact = latest_published_recap_artifact(database, run.id)
-        latest_recap = validated_recap(recap_artifact)
-        dispatch_day = (
-            max(1, min(14, (latest_recap.story_date - run.started_at.date()).days + 1))
-            if latest_recap is not None
-            else 1
-        )
-        document = document.replace(
-            "Published story update · Day one",
-            f"Latest published story update · Day {dispatch_day}",
-        )
+        season_recaps = published_recaps(database, run.id)
+        latest_recap = season_recaps[-1] if season_recaps else None
+        for placeholder, markup in dispatch_lead_markup(
+            run, latest_recap, len(season_recaps)
+        ).items():
+            document = document.replace(placeholder, markup)
         replacements = {
             '/lighthouse/town"': f'/lighthouse/runs/{run.id}/town"',
             '/lighthouse/archive"': f'/lighthouse/runs/{run.id}/archive"',
         }
         for old, new in replacements.items():
             document = document.replace(old, new)
-        panels, threads = published_recap_markup(run, recap_artifact)
-        action = lighthouse_recommendation(run, world, database, recap_artifact)
+        panels, threads = published_recap_markup(run, latest_recap)
+        action = lighthouse_recommendation(run, world, database, latest_recap)
         document = document.replace("<!-- PUBLISHED_RECAP -->", panels)
         document = document.replace("<!-- ACTIVE_THREADS -->", threads)
         document = document.replace(
@@ -1287,7 +1296,7 @@ def create_app(
         )
         document = document.replace(
             "<!-- CURRENT_STORY_STATE -->",
-            current_story_state(database, run, visitor, recap_artifact),
+            current_story_state(database, run, visitor, latest_recap),
         )
         document = document.replace(
             "<!-- DISPATCH_STATUS -->", dispatch_status_markup(database, run, world)
@@ -2005,19 +2014,9 @@ def create_app(
             and item.payload.get("location_id") == location_id
         ][:limit]
 
-    def validated_recap(artifact: ArtifactModel | None) -> DailyRecap | None:
-        if artifact is None:
-            return None
-        try:
-            return DailyRecap.model_validate(artifact.payload["recap"])
-        except (KeyError, ValueError):
-            logger.warning(
-                "published_recap_invalid",
-                extra={"artifact_id": str(artifact.id), "run_id": str(artifact.run_id)},
-            )
-            return None
-
-    def recap_panels_at(recap: DailyRecap | None, location_id: str) -> list[RecapPanel]:
+    def recap_panels_at(
+        recap: DailyRecap | PublishedRecapView | None, location_id: str
+    ) -> list[RecapPanel]:
         return (
             [panel for panel in recap.panels if panel.location_id == location_id] if recap else []
         )
@@ -2026,10 +2025,9 @@ def create_app(
         run: RunRecord,
         world: WorldDefinition,
         database: Session,
-        recap_artifact: ArtifactModel | None,
+        recap: PublishedRecapView | None,
     ) -> LighthouseRecommendation:
         """Rank narrative candidates against live public state and contact policy."""
-        recap = validated_recap(recap_artifact)
         simulation_time = run.simulation_time or run.started_at
         day = story_day(run)
         presences = TownState(world).public_presence(day=day, at=simulation_time.time())
@@ -2136,7 +2134,7 @@ def create_app(
             if action is not None:
                 return action
 
-        if recap is not None and recap_artifact is not None:
+        if recap is not None:
             thread = (
                 f" Follow the thread: {recap.active_threads[0]}" if recap.active_threads else ""
             )
@@ -2145,7 +2143,7 @@ def create_app(
                 title="Read the latest published story update.",
                 explanation=f"The episode is available now.{thread}",
                 cta_label="Read the story update",
-                href=f"/lighthouse/runs/{run.id}/archive/{recap_artifact.id}",
+                href=f"/lighthouse/runs/{run.id}/archive/{recap.id}",
             )
 
         # With no published recap, fall back only to truthful current public state.
@@ -2212,14 +2210,11 @@ def create_app(
             <a class="primary-action" data-primary-recommendation="true" data-playable-action="{action.kind}" href="{escape(action.href)}">{escape(action.cta_label)} <span aria-hidden="true">→</span></a>
           </div>'''
 
-    def published_recap_markup(
-        run: RunRecord, recap_artifact: ArtifactModel | None
-    ) -> tuple[str, str]:
-        recap = validated_recap(recap_artifact)
-        if recap is None or recap_artifact is None:
+    def published_recap_markup(run: RunRecord, recap: PublishedRecapView | None) -> tuple[str, str]:
+        if recap is None:
             panels = """<article class="recap-panel"><p class="panel-index">Published story update</p><h3>No episode has been published yet</h3><p>Greyhaven may still have live public activity. The recommendation alongside this briefing uses the current town state.</p></article>"""
             return panels, "<li><span>—</span> No published threads yet.</li>"
-        href = f"/lighthouse/runs/{run.id}/archive/{recap_artifact.id}"
+        href = f"/lighthouse/runs/{run.id}/archive/{recap.id}"
         panels = "".join(
             '<article class="recap-panel" data-meaningful-public-content="dispatch">'
             f'<p class="panel-index">Published scene {index}</p>'
@@ -2253,8 +2248,7 @@ def create_app(
         simulation_time = run.simulation_time or run.started_at
         day = story_day(run)
         town_state = TownState(world)
-        recap_artifact = latest_published_recap_artifact(database, run.id)
-        recap = validated_recap(recap_artifact)
+        recap = latest_published_recap(database, run.id)
         presences = town_state.public_presence(day=day, at=simulation_time.time())
         by_location = {
             location.id: [item for item in presences if item.location_id == location.id]
@@ -2339,7 +2333,7 @@ def create_app(
                     run,
                     world,
                     database,
-                    recap_artifact,
+                    recap,
                 )
             stale_recommendation = (
                 expected_recommendation == "visit"
@@ -2373,7 +2367,7 @@ def create_app(
               </article>
             """
         else:
-            town_action = lighthouse_recommendation(run, world, database, recap_artifact)
+            town_action = lighthouse_recommendation(run, world, database, recap)
             detail = f"""
               <section class="town-intro" aria-labelledby="town-title">
                 <p class="eyebrow">Town map · Day {day}</p>
@@ -2635,29 +2629,8 @@ def create_app(
         content = f"""<article class="profile-file" aria-labelledby="profile-name"><a class="back-link" href="/lighthouse/runs/{run.id}/people">← Return to People</a><header><div class="profile-monogram" aria-hidden="true">{escape(character.name[0])}</div><div><p class="eyebrow">Public character file</p><h1 id="profile-name">{escape(character.name)}</h1><p class="profile-bio">{escape(character.description)}</p></div></header><div class="profile-facts"><section><h2>Voice</h2><p>{escape(character.public_voice or "Their voice is not publicly known yet.")}</p></section><section><h2>Whereabouts</h2><p>{location_markup}</p></section><section><h2>Known connections</h2><ul>{connections_markup}</ul></section></div><aside class="margin-notes" aria-labelledby="notes-title"><p class="eyebrow">Written from your visit</p><h2 id="notes-title">What stands between you</h2><p class="relationship-cue">{escape(relationship)}</p><h3>Your remembered exchanges</h3><ul>{memory_markup}</ul></aside>{talk_markup}</article>"""
         return HTMLResponse(profile_shell(run, character.name, content))
 
-    def published_recaps(database: Session, run_id: UUID) -> list[ArtifactModel]:
-        recaps = [
-            artifact
-            for artifact in database.scalars(
-                select(ArtifactModel)
-                .where(ArtifactModel.run_id == run_id, ArtifactModel.kind == "daily_recap")
-                .order_by(ArtifactModel.generated_at, ArtifactModel.id)
-            )
-            if artifact.payload.get("visibility", "public") == "public"
-            and artifact.payload.get("canonical", True)
-            and "recap" in artifact.payload
-            and validated_recap(artifact) is not None
-        ]
-        return sorted(
-            recaps,
-            key=lambda item: (
-                DailyRecap.model_validate(item.payload["recap"]).story_date,
-                str(item.id),
-            ),
-        )
-
     def archive_publication_message(
-        database: Session, run: RunRecord, recaps: list[ArtifactModel]
+        database: Session, run: RunRecord, recaps: list[PublishedRecapView]
     ) -> str:
         source_dates = {
             _aware(item.generated_at).date()
@@ -2669,9 +2642,7 @@ def create_app(
             )
             if item.payload.get("visibility", "public") == "public"
         }
-        published_dates = {
-            DailyRecap.model_validate(item.payload["recap"]).story_date for item in recaps
-        }
+        published_dates = {item.story_date for item in recaps}
         current_date = (run.simulation_time or run.started_at).date()
         awaiting = sorted(
             item
@@ -2696,10 +2667,10 @@ def create_app(
             return "Today's public story is still unfolding. Its story update is published after the story day closes."
         return "No public story update has been filed yet."
 
-    def story_so_far(recaps: list[ArtifactModel]) -> str:
+    def story_so_far(recaps: list[PublishedRecapView]) -> str:
         if not recaps:
             return "No public story update has been published to the archive yet."
-        summaries = [DailyRecap.model_validate(item.payload["recap"]).dek for item in recaps]
+        summaries = [item.dek for item in recaps]
         return " ".join(summaries[-4:])
 
     def archive_shell(
@@ -2754,11 +2725,10 @@ def create_app(
             visible = recaps[: boundary + 1]
             boundary_note = f"Spoilers stop after episode {boundary + 1}."
         episode_items = []
-        for index, artifact in enumerate(visible):
-            recap = DailyRecap.model_validate(artifact.payload["recap"])
+        for index, recap in enumerate(visible):
             panel_titles = "".join(f"<li>{escape(panel.title)}</li>" for panel in recap.panels)
             episode_items.append(
-                f"""<li class="episode-entry"><a href="/lighthouse/runs/{run.id}/archive/{artifact.id}"><span class="episode-number">{index + 1:02}</span><span class="episode-entry__copy"><time datetime="{artifact.generated_at.isoformat()}">{recap.story_date.strftime("%B %d, %Y")}</time><strong>{escape(recap.headline)}</strong><span>{escape(recap.dek)}</span></span></a><details><summary>Panels in this episode</summary><ol>{panel_titles or "<li>No panels were published.</li>"}</ol></details></li>"""
+                f"""<li class="episode-entry" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}"><a href="/lighthouse/runs/{run.id}/archive/{recap.id}"><span class="episode-number">{index + 1:02}</span><span class="episode-entry__copy"><time datetime="{recap.published_at.isoformat()}">{recap.story_date.strftime("%B %d, %Y")}</time><strong>{escape(recap.headline)}</strong><span>{escape(recap.dek)}</span></span></a><details><summary>Panels in this episode</summary><ol>{panel_titles or "<li>No panels were published.</li>"}</ol></details></li>"""
             )
         empty = (
             f'<li class="archive-empty"><strong>The archive is waiting.</strong><span>{escape(archive_publication_message(database, run, recaps))}</span></li>'
@@ -2796,11 +2766,10 @@ def create_app(
         index = next((i for i, item in enumerate(recaps) if item.id == episode_id), None)
         if index is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "published episode not found")
-        artifact = recaps[index]
-        recap = DailyRecap.model_validate(artifact.payload["recap"])
+        recap = recaps[index]
         panels = (
             "".join(
-                f'<article class="archive-panel"><p class="eyebrow">Panel {panel_index + 1:02}</p><h2>{escape(panel.title)}</h2><p>{escape(panel.body)}</p><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=recap_panel&amp;target_id={panel.source_id}&amp;artifact_id={artifact.id}">Flag this panel</a></article>'
+                f'<article class="archive-panel"><p class="eyebrow">Panel {panel_index + 1:02}</p><h2>{escape(panel.title)}</h2><p>{escape(panel.body)}</p><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=recap_panel&amp;target_id={panel.source_id}&amp;artifact_id={recap.id}">Flag this panel</a></article>'
                 for panel_index, panel in enumerate(recap.panels)
             )
             or '<p class="archive-empty">This quiet-day story update contains no panels.</p>'
@@ -2815,14 +2784,14 @@ def create_app(
             if index + 1 < len(recaps)
             else "<span>You are caught up</span>"
         )
-        content = f"""<article class="episode-page" data-meaningful-public-content="dispatch" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={artifact.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{artifact.generated_at.isoformat()}">Published {artifact.generated_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={artifact.id}&amp;artifact_id={artifact.id}">Flag this episode</a></header><section class="archive-panels" aria-label="Story panels">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
+        content = f"""<article class="episode-page" data-meaningful-public-content="dispatch" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={recap.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{recap.published_at.isoformat()}">Published {recap.published_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={recap.id}&amp;artifact_id={recap.id}">Flag this episode</a></header><section class="archive-panels" aria-label="Story panels">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
         selected = selected_story(database, token)
         return HTMLResponse(
             archive_shell(
                 run,
                 recap.headline,
                 recap.dek,
-                f"/lighthouse/runs/{run.id}/archive/{artifact.id}",
+                f"/lighthouse/runs/{run.id}/archive/{recap.id}",
                 content,
                 include_people=selected is not None and selected.id == run_id,
             )

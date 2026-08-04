@@ -7,8 +7,16 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from rumor_mill.adapters.persistence.models import Base, RunModel, VisitorModel, WorldModel
+from rumor_mill.adapters.persistence.models import (
+    ArtifactModel,
+    Base,
+    RunModel,
+    VisitorModel,
+    WorldModel,
+)
 from rumor_mill.bootstrap import LIGHTHOUSE_PATH, bootstrap_lighthouse, main
+from rumor_mill.engine.recap import DailyRecap
+from rumor_mill.lighthouse_opening import opening_recap_id
 
 pytestmark = pytest.mark.integration
 
@@ -33,6 +41,13 @@ def test_empty_database_bootstraps_one_wall_clock_lighthouse_season(tmp_path: Pa
         assert database.scalar(select(func.count()).select_from(RunModel)) == 1
         run = database.get(RunModel, result.run_id)
         assert run is not None and run.status == "running" and run.clock_mode == "wall"
+        artifact = database.get(ArtifactModel, opening_recap_id(result.run_id))
+        assert artifact is not None
+        assert artifact.story_date == run.started_at.date()
+        assert artifact.payload["visibility"] == "public"
+        recap = DailyRecap.model_validate(artifact.payload["recap"])
+        assert recap.headline == "Northlight goes dark."
+        assert len(recap.panels) == 3
 
 
 def test_repeat_bootstrap_selects_live_season_without_changing_state(tmp_path: Path) -> None:
@@ -56,6 +71,14 @@ def test_repeat_bootstrap_selects_live_season_without_changing_state(tmp_path: P
     with Session(create_engine(url)) as database:
         assert database.scalar(select(func.count()).select_from(VisitorModel)) == 1
         assert database.scalar(select(func.count()).select_from(RunModel)) == 1
+        assert (
+            database.scalar(
+                select(func.count())
+                .select_from(ArtifactModel)
+                .where(ArtifactModel.kind == "daily_recap")
+            )
+            == 1
+        )
 
 
 def test_failed_validation_leaves_prepared_database_untouched(tmp_path: Path) -> None:
