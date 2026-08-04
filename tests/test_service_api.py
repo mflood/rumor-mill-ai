@@ -34,6 +34,7 @@ from rumor_mill.adapters.persistence.models import (
     WorkerHeartbeatModel,
     WorldModel,
 )
+from rumor_mill.adapters.persistence.published_recaps import latest_published_recap
 from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.config import Settings
 from rumor_mill.engine.conversation import CharacterConversationEngine
@@ -45,7 +46,7 @@ from rumor_mill.engine.ports import (
     RunStatus,
     StreamEvent,
 )
-from rumor_mill.engine.recap import RecapSource, build_daily_recap
+from rumor_mill.engine.recap import DailyRecap, RecapPanel, RecapSource, build_daily_recap
 from rumor_mill.main import create_app
 
 ROOT = Path(__file__).parents[1]
@@ -1722,6 +1723,148 @@ def test_today_presents_one_accessible_current_story_state(api) -> None:  # type
     assert "Since your last visit" not in failed.text
 
 
+def test_today_and_archive_share_one_published_recap_contract(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+
+    empty_today = client.get("/lighthouse/today")
+    empty_archive = client.get(f"/lighthouse/runs/{run_id}/archive")
+    assert "No published story update" in empty_today.text
+    assert "No episode has been published yet" in empty_today.text
+    assert "No public story update has been filed yet" in empty_archive.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        first_date = run.started_at.date()
+        first_id = uuid4()
+        first_source = uuid4()
+        first = DailyRecap(
+            story_date=first_date,
+            headline="First persisted dispatch",
+            dek="The first shared artifact.",
+            panels=(
+                RecapPanel(
+                    source_id=first_source,
+                    title="One public panel",
+                    body="This panel appears on both routes.",
+                    location_id="market",
+                    character_id="ada",
+                ),
+            ),
+            active_threads=("Who rang the bell?",),
+            suggested_location_ids=("market",),
+            suggested_character_ids=("ada",),
+            state="active",
+        )
+        database.add(
+            ArtifactModel(
+                id=first_id,
+                run_id=run_id,
+                kind="daily_recap",
+                title=first.headline,
+                body=first.dek,
+                generated_at=run.started_at,
+                story_date=first.story_date,
+                source_ids=[str(first_source)],
+                payload=first.artifact_payload(),
+            )
+        )
+        database.commit()
+
+    one_today = client.get("/lighthouse/today")
+    one_archive = client.get(f"/lighthouse/runs/{run_id}/archive")
+    shared_marker = f'data-dispatch-id="{first_id}"'
+    assert shared_marker in one_today.text and shared_marker in one_archive.text
+    assert 'data-panel-count="1"' in one_today.text
+    assert 'data-panel-count="1"' in one_archive.text
+    assert "First persisted dispatch" in one_today.text
+    assert "First persisted dispatch" in one_archive.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        second_id = uuid4()
+        second = DailyRecap(
+            story_date=run.started_at.date() + timedelta(days=1),
+            headline="Second persisted dispatch",
+            dek="The latest successful publication.",
+            panels=(),
+            active_threads=("What happens after quiet?",),
+            suggested_location_ids=("market",),
+            suggested_character_ids=("ada",),
+            state="quiet_day",
+        )
+        database.add_all(
+            [
+                ArtifactModel(
+                    id=second_id,
+                    run_id=run_id,
+                    kind="daily_recap",
+                    title=second.headline,
+                    body=second.dek,
+                    generated_at=run.started_at + timedelta(days=1),
+                    story_date=second.story_date,
+                    source_ids=[],
+                    payload=second.artifact_payload(),
+                ),
+                ArtifactModel(
+                    run_id=run_id,
+                    kind="daily_recap",
+                    title="Private future draft",
+                    body="Never published.",
+                    generated_at=run.started_at + timedelta(days=2),
+                    source_ids=[],
+                    payload={"visibility": "private", "recap": second.model_dump(mode="json")},
+                ),
+            ]
+        )
+        database.commit()
+        view = latest_published_recap(database, run_id)
+        assert view is not None
+        assert view.id == second_id
+        assert view.active_threads == ("What happens after quiet?",)
+        assert view.suggested_location_ids == ("market",)
+        assert view.suggested_character_ids == ("ada",)
+
+    latest_today = client.get("/lighthouse/today")
+    latest_archive = client.get(f"/lighthouse/runs/{run_id}/archive")
+    latest_marker = f'data-dispatch-id="{second_id}"'
+    assert latest_marker in latest_today.text and latest_marker in latest_archive.text
+    assert f'data-dispatch-id="{first_id}"' in latest_archive.text
+    assert "Private future draft" not in latest_today.text
+    assert "Private future draft" not in latest_archive.text
+    assert 'data-panel-count="0"' in latest_today.text
+    assert 'data-panel-count="0"' in latest_archive.text
+    assert "Quiet-day dispatch" in latest_today.text
+    assert "Quiet-day story update" in latest_today.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        database.add(
+            JobModel(
+                run_id=run_id,
+                idempotency_key=f"run:{run_id}:beat:failed-after-second",
+                kind="lighthouse_story",
+                status="dead",
+                scheduled_at=run.started_at + timedelta(days=1, minutes=1),
+                available_at=run.started_at + timedelta(days=1, minutes=1),
+                attempts=5,
+                max_attempts=5,
+                payload={"story_kind": "beat", "id": "failed-after-second"},
+                error="safe failure summary",
+            )
+        )
+        database.commit()
+
+    failed_today = client.get("/lighthouse/today")
+    assert latest_marker in failed_today.text
+    assert "Today’s story update could not be prepared" in failed_today.text
+    assert "Read the previous story update" in failed_today.text
+
+
 def test_today_dispatch_countdown_uses_live_schedule_and_progresses_in_browser(api) -> None:  # type: ignore[no-untyped-def]
     client, factory = api
     run_id = UUID(str(initialize(client)["id"]))
@@ -1907,6 +2050,8 @@ def test_today_dispatch_status_reconciles_jobs_and_public_authored_work(api) -> 
     failed = client.get("/lighthouse/today")
     assert 'data-state="failed"' in failed.text
     assert "could not be published" in failed.text
+    assert "no earlier episode has been published" in failed.text
+    assert "Explore the town" in failed.text
 
     with factory() as database:
         run = database.get(RunModel, run_id)

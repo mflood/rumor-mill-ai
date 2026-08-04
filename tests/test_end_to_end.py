@@ -15,12 +15,54 @@ from pydantic import SecretStr
 from rumor_mill.adapters.persistence import create_database_engine, create_session_factory
 from rumor_mill.adapters.persistence.models import ArtifactModel, RunModel
 from rumor_mill.adapters.providers import DeterministicFakeProvider
+from rumor_mill.bootstrap import bootstrap_lighthouse
 from rumor_mill.config import Settings
 from rumor_mill.engine.conversation import CharacterConversationEngine
 from rumor_mill.main import create_app
 
 ROOT = Path(__file__).parents[1]
 pytestmark = pytest.mark.e2e
+
+
+def test_fresh_lighthouse_seed_publishes_the_same_opening_on_today_and_archive(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'fresh-lighthouse.db'}"
+    migration = Config(str(ROOT / "alembic.ini"))
+    migration.set_main_option("script_location", str(ROOT / "migrations"))
+    migration.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(migration, "head")
+    seeded = bootstrap_lighthouse(database_url)
+    engine = create_database_engine(database_url)
+    factory = create_session_factory(engine)
+    app = create_app(
+        Settings(
+            database_url=database_url,
+            operator_api_key=SecretStr("e2e-operator"),
+            environment="test",
+            secure_visitor_cookie=False,
+        ),
+        factory,
+        CharacterConversationEngine(DeterministicFakeProvider({})),
+    )
+
+    try:
+        with TestClient(app) as client:
+            entered = client.post("/lighthouse/session", follow_redirects=False)
+            assert entered.status_code == 303
+            today = client.get("/lighthouse/today")
+            archive = client.get(f"/lighthouse/runs/{seeded.run_id}/archive")
+
+            today_id = re.search(r'data-dispatch-id="([^"]+)"', today.text)
+            archive_id = re.search(r'data-dispatch-id="([^"]+)"', archive.text)
+            assert today_id is not None and archive_id is not None
+            assert today_id.group(1) == archive_id.group(1)
+            assert 'data-panel-count="3"' in today.text
+            assert 'data-panel-count="3"' in archive.text
+            assert "Northlight goes dark." in today.text
+            assert "Northlight goes dark." in archive.text
+    finally:
+        engine.dispose()
 
 
 def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
