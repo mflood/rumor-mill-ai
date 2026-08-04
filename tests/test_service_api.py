@@ -202,6 +202,17 @@ def test_lighthouse_active_visit_uses_one_four_item_navigation_contract(api) -> 
     for name, route in routes.items():
         response = client.get(route)
         assert response.status_code == 200, name
+        assert response.text.count('href="/lighthouse/help">How to play</a>') == 1, name
+        assert not any(
+            term in response.text.casefold()
+            for term in (
+                "public presence chart",
+                "island field chart",
+                "cast ledger",
+                "private line",
+                "episode panel",
+            )
+        ), name
         navigation = primary_navigation(response.text)
         assert [(label, href) for label, href, _ in navigation] == hrefs, name
         assert [label for label, _, current in navigation if current] == [sections[name]], name
@@ -217,6 +228,51 @@ def test_lighthouse_active_visit_uses_one_four_item_navigation_contract(api) -> 
     with TestClient(client.app) as unscoped_visitor:
         start_visitor_session(unscoped_visitor)
         assert unscoped_visitor.get(f"/lighthouse/runs/{other_run_id}/people").status_code == 404
+
+
+def test_lighthouse_help_does_not_mutate_an_active_visit(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
+    conversation = client.post(f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"})
+    assert conversation.status_code == 201
+    conversation_id = UUID(conversation.json()["id"])
+
+    with factory() as database:
+        visitor = database.scalar(select(VisitorModel).where(VisitorModel.active_run_id == run_id))
+        run = database.get(RunModel, run_id)
+        stored_conversation = database.get(ConversationModel, conversation_id)
+        assert visitor is not None and run is not None and stored_conversation is not None
+        before = (
+            visitor.id,
+            visitor.active_run_id,
+            visitor.last_seen_at,
+            run.status,
+            run.simulation_time,
+            tuple(stored_conversation.transcript),
+        )
+
+    response = client.get("/lighthouse/help")
+    assert response.status_code == 200
+    assert "set-cookie" not in response.headers
+    assert "published story update visible to everyone" in response.text
+    assert "Public absence never means that private contact is unavailable" in response.text
+
+    with factory() as database:
+        visitor = database.scalar(select(VisitorModel).where(VisitorModel.active_run_id == run_id))
+        run = database.get(RunModel, run_id)
+        stored_conversation = database.get(ConversationModel, conversation_id)
+        assert visitor is not None and run is not None and stored_conversation is not None
+        after = (
+            visitor.id,
+            visitor.active_run_id,
+            visitor.last_seen_at,
+            run.status,
+            run.simulation_time,
+            tuple(stored_conversation.transcript),
+        )
+
+    assert after == before
 
 
 def test_lighthouse_historical_archive_and_people_are_safe_and_read_only(api) -> None:  # type: ignore[no-untyped-def]
@@ -451,7 +507,8 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
     assert town_page.status_code == 200
     assert "Lantern Market" in town_page.text
     assert "No one publicly present" in town_page.text
-    assert "Positions only show public activity" in town_page.text
+    assert "Public whereabouts only" in town_page.text
+    assert "may still be reachable for private contact" in town_page.text
     location_page = client.get(f"/lighthouse/runs/{run_id}/town/market")
     assert location_page.status_code == 200
     assert "Ada opened the market shutters" in location_page.text
@@ -858,7 +915,9 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     ledger = client.get(f"/lighthouse/runs/{run_id}/people")
     assert ledger.status_code == 200
     assert "Ada now recognizes your careful questions" in ledger.text
-    assert "Seen in a public dispatch. You have not spoken privately yet." in ledger.text
+    assert (
+        "Seen in a published public story update. You have not spoken privately yet." in ledger.text
+    )
     profile = client.get(f"/lighthouse/runs/{run_id}/people/ada")
     assert profile.status_code == 200
     assert "Short observations followed by a careful question" in profile.text
@@ -872,7 +931,7 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     assert "OTHER VISITOR" not in profile.text
     assert "possesses the observatory key" not in profile.text
     unknown = client.get(f"/lighthouse/runs/{run_id}/people/bea")
-    assert "public dispatch, but have not spoken privately" in unknown.text
+    assert "published public story update, but have not spoken privately" in unknown.text
     assert "No private encounters yet" in unknown.text
     assert "Away from public locations" in unknown.text
     assert "Bea isn&#x27;t at a public location, but you can message them privately" in unknown.text
@@ -881,7 +940,7 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     assert "You have not encountered this person yet" in unencountered.text
     assert "Whereabouts unknown" in unencountered.text
     assert "Cy cannot be reached right now" in unencountered.text
-    assert "Private line unavailable" in unencountered.text
+    assert "Private contact unavailable" in unencountered.text
     delayed = client.get(f"/lighthouse/runs/{run_id}/people/dee")
     assert "reply may be delayed" in delayed.text
     started = client.post(f"/lighthouse/runs/{run_id}/talk/dee", follow_redirects=False)
@@ -1008,6 +1067,8 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
 
     first = client.get(f"/lighthouse/runs/{run_id}/archive/{first_id}")
     assert first.status_code == 200
+    assert first.text.count('href="/lighthouse/help">How to play</a>') == 1
+    assert "Story panels" in first.text
     assert "Empty lanterns" in first.text
     assert "Beginning of the season" in first.text
     assert f'href="/lighthouse/runs/{run_id}/archive/{second_id}"' in first.text
@@ -1020,7 +1081,7 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
     empty_run = UUID(str(initialize(client)["id"]))
     empty = client.get(f"/lighthouse/runs/{empty_run}/archive")
     assert "The archive is waiting" in empty.text
-    assert "No public dispatch has been published" in empty.text
+    assert "No public story update has been published" in empty.text
 
 
 def test_archive_and_operator_explain_recap_pipeline_states(api) -> None:  # type: ignore[no-untyped-def]
@@ -1577,7 +1638,7 @@ def test_today_presents_one_accessible_current_story_state(api) -> None:  # type
     assert quiet.text.count('role="status"') == 1
     assert quiet.text.count("Active now") == 1
     assert "No new public scenes" in quiet.text
-    assert "Today’s dispatch could not be prepared" not in quiet.text
+    assert "Today’s story update could not be prepared" not in quiet.text
     assert "Since your last visit" not in quiet.text
     assert "How updates work" in quiet.text
     assert "Your progress and private conversations are safe" in quiet.text
@@ -1654,8 +1715,8 @@ def test_today_presents_one_accessible_current_story_state(api) -> None:  # type
 
     failed = client.get("/lighthouse/today")
     assert failed.text.count('role="status"') == 1
-    assert "Today’s dispatch could not be prepared" in failed.text
-    assert "Read the previous dispatch" in failed.text
+    assert "Today’s story update could not be prepared" in failed.text
+    assert "Read the previous story update" in failed.text
     assert "Your progress and private conversations are safe" in failed.text
     assert "No new public scenes" not in failed.text
     assert "Since your last visit" not in failed.text
@@ -1675,7 +1736,7 @@ def test_today_dispatch_countdown_uses_live_schedule_and_progresses_in_browser(a
     today = client.get("/lighthouse/today")
 
     assert 'data-dispatch-status data-state="scheduled"' in today.text
-    assert "Next town dispatch in 5 minutes" in today.text
+    assert "Next public story update in 5 minutes" in today.text
     assert "47 minutes" not in today.text
     assert 'data-simulation-time="' in today.text
     assert 'data-target-time="' in today.text
@@ -1767,7 +1828,7 @@ def test_today_dispatch_status_handles_manual_paused_overdue_and_season_end(api)
 
     manual = client.get("/lighthouse/today")
     assert 'data-state="manual"' in manual.text
-    assert "the next dispatch advances only when the operator moves time" in manual.text
+    assert "the next public story update advances only when the operator moves time" in manual.text
 
     with factory() as database:
         run = database.get(RunModel, run_id)
@@ -1778,7 +1839,7 @@ def test_today_dispatch_status_handles_manual_paused_overdue_and_season_end(api)
     paused = client.get("/lighthouse/today", follow_redirects=False)
     assert paused.status_code == 200
     assert 'data-state="paused"' in paused.text
-    assert "dispatch timing will resume with the season" in paused.text
+    assert "story-update timing will resume with the season" in paused.text
 
     with factory() as database:
         run = database.get(RunModel, run_id)
@@ -1789,7 +1850,7 @@ def test_today_dispatch_status_handles_manual_paused_overdue_and_season_end(api)
         database.commit()
     overdue = client.get("/lighthouse/today")
     assert 'data-state="overdue"' in overdue.text
-    assert "waiting for the next simulation tick" in overdue.text
+    assert "waiting for the next town-clock step" in overdue.text
 
     with factory() as database:
         run = database.get(RunModel, run_id)
@@ -1798,7 +1859,7 @@ def test_today_dispatch_status_handles_manual_paused_overdue_and_season_end(api)
         database.commit()
     ended_schedule = client.get("/lighthouse/today")
     assert 'data-state="unavailable"' in ended_schedule.text
-    assert "No more town dispatches are scheduled this season" in ended_schedule.text
+    assert "No more public story updates are scheduled this season" in ended_schedule.text
 
     with factory() as database:
         run = database.get(RunModel, run_id)
@@ -1834,7 +1895,7 @@ def test_today_dispatch_status_reconciles_jobs_and_public_authored_work(api) -> 
         )
         database.commit()
     preparing = client.get("/lighthouse/today")
-    assert "The next town dispatch is being prepared" in preparing.text
+    assert "The next public story update is being prepared" in preparing.text
 
     with factory() as database:
         job = database.scalar(
@@ -1902,7 +1963,7 @@ def test_today_dispatch_status_reconciles_jobs_and_public_authored_work(api) -> 
         database.commit()
 
     eligible_dependency = client.get("/lighthouse/today")
-    assert "Next town dispatch in 5 minutes" in eligible_dependency.text
+    assert "Next public story update in 5 minutes" in eligible_dependency.text
 
     with factory() as database:
         run = database.get(RunModel, run_id)
@@ -1920,7 +1981,7 @@ def test_today_dispatch_status_reconciles_jobs_and_public_authored_work(api) -> 
         )
         database.commit()
     public_window = client.get("/lighthouse/today")
-    assert "Next town dispatch in 600 minutes" in public_window.text
+    assert "Next public story update in 600 minutes" in public_window.text
 
     with factory() as database:
         run = database.get(RunModel, run_id)
@@ -1938,7 +1999,7 @@ def test_today_dispatch_status_reconciles_jobs_and_public_authored_work(api) -> 
         )
         database.commit()
     no_future = client.get("/lighthouse/today")
-    assert "No future town dispatch is currently scheduled" in no_future.text
+    assert "No future public story update is currently scheduled" in no_future.text
 
 
 def test_lighthouse_recommendations_validate_live_state_and_recover_when_stale(  # type: ignore[no-untyped-def]
@@ -2043,7 +2104,9 @@ def test_lighthouse_recommends_public_content_without_claiming_presence(api) -> 
 
     assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
     today = client.get("/lighthouse/today")
-    assert "No resident is publicly present, but a published dispatch is available" in today.text
+    assert (
+        "No resident is publicly present, but a published story update is available" in today.text
+    )
     assert 'data-playable-action="observe"' in today.text
     assert "Message Ada" not in today.text
     destination = client.get(f"/lighthouse/runs/{run_id}/town/market?recommended=observe")
@@ -2193,7 +2256,7 @@ def test_recap_candidate_fallbacks_skip_invalid_or_unavailable_suggestions(api) 
         database.commit()
     assert client.post("/lighthouse/session", follow_redirects=False).status_code == 303
     read_fallback = client.get("/lighthouse/today")
-    assert "Read the latest published dispatch" in read_fallback.text
+    assert "Read the latest published story update" in read_fallback.text
     assert "Follow the thread: Who closed the courier route?" in read_fallback.text
 
     with factory() as database:
@@ -2210,7 +2273,7 @@ def test_recap_candidate_fallbacks_skip_invalid_or_unavailable_suggestions(api) 
         )
         database.commit()
     malformed = client.get("/lighthouse/today")
-    assert "Read the latest published dispatch" in malformed.text
+    assert "Read the latest published story update" in malformed.text
     assert "Who closed the courier route?" in malformed.text
     assert "Incomplete" not in malformed.text
 

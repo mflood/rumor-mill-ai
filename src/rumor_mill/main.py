@@ -700,7 +700,10 @@ def create_app(
             return f'<a href="{hrefs[key]}"{current_attribute}>{label}</a>'
 
         links = "".join(nav_link(key, label) for key, label in labels)
-        return f'<nav aria-label="Primary navigation">{links}</nav>'
+        return (
+            f'<nav aria-label="Primary navigation">{links}</nav>'
+            '<a class="help-link" href="/lighthouse/help">How to play</a>'
+        )
 
     def published_archive_runs(database: Session) -> list[RunModel]:
         """Return newest-first seasons that own committed public recap artifacts."""
@@ -809,11 +812,11 @@ def create_app(
         """
         simulation_time = _aware(run.simulation_time or run.started_at)
         if run.status is RunStatus.COMPLETED:
-            return '<p data-dispatch-status data-state="completed"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>This season has ended; no more town dispatches are scheduled.</p>'
+            return '<p data-dispatch-status data-state="completed"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>This season has ended; no more public story updates are scheduled.</p>'
         if run.status is RunStatus.PAUSED or run.clock_mode is ClockMode.PAUSED:
-            return '<p data-dispatch-status data-state="paused"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>The town clock is paused; dispatch timing will resume with the season.</p>'
+            return '<p data-dispatch-status data-state="paused"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>The town clock is paused; story-update timing will resume with the season.</p>'
         if run.clock_mode is ClockMode.MANUAL:
-            return '<p data-dispatch-status data-state="manual"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>The town clock is manual; the next dispatch advances only when the operator moves time.</p>'
+            return '<p data-dispatch-status data-state="manual"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>The town clock is manual; the next public story update advances only when the operator moves time.</p>'
 
         jobs = list(
             database.scalars(
@@ -829,9 +832,9 @@ def create_app(
             job for job in incomplete_jobs if _aware(job.scheduled_at) <= simulation_time
         ]
         if any(job.status == "dead" for job in overdue_jobs):
-            return '<p data-dispatch-status data-state="failed"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>A scheduled town dispatch could not be published.</p>'
+            return '<p data-dispatch-status data-state="failed"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>A scheduled public story update could not be published.</p>'
         if overdue_jobs:
-            return '<p data-dispatch-status data-state="overdue"><span class="status-dot" aria-hidden="true"></span>The next town dispatch is being prepared.</p>'
+            return '<p data-dispatch-status data-state="overdue"><span class="status-dot" aria-hidden="true"></span>The next public story update is being prepared.</p>'
 
         candidates = [_aware(job.scheduled_at) for job in incomplete_jobs]
         completed_beats = {
@@ -849,7 +852,7 @@ def create_app(
             earliest = _aware(run.started_at) + timedelta(days=beat.earliest_day - 1, minutes=5)
             latest = _aware(run.started_at) + timedelta(days=beat.latest_day)
             if earliest <= simulation_time <= latest:
-                return '<p data-dispatch-status data-state="overdue"><span class="status-dot" aria-hidden="true"></span>The next town dispatch is waiting for the next simulation tick.</p>'
+                return '<p data-dispatch-status data-state="overdue"><span class="status-dot" aria-hidden="true"></span>The next public story update is waiting for the next town-clock step.</p>'
             if earliest > simulation_time and earliest <= latest:
                 candidates.append(earliest)
 
@@ -875,9 +878,9 @@ def create_app(
         if not candidates:
             season_end = _aware(run.started_at) + timedelta(days=14)
             message = (
-                "No more town dispatches are scheduled this season."
+                "No more public story updates are scheduled this season."
                 if simulation_time >= season_end
-                else "No future town dispatch is currently scheduled."
+                else "No future public story update is currently scheduled."
             )
             return f'<p data-dispatch-status data-state="unavailable"><span class="status-dot status-dot--quiet" aria-hidden="true"></span>{message}</p>'
 
@@ -890,7 +893,7 @@ def create_app(
             f'data-target-time="{escape(target.isoformat())}" '
             f'data-clock-rate="{float(run.clock_rate):g}">'
             '<span class="status-dot" aria-hidden="true"></span>'
-            f"<span data-dispatch-copy>Next town dispatch in {remaining_minutes} {unit}</span></p>"
+            f"<span data-dispatch-copy>Next public story update in {remaining_minutes} {unit}</span></p>"
         )
 
     def latest_published_recap_artifact(database: Session, run_id: UUID) -> ArtifactModel | None:
@@ -941,12 +944,12 @@ def create_app(
         )
 
         if failure_is_current:
-            title = "Today’s dispatch could not be prepared"
+            title = "Today’s story update could not be prepared"
             body = (
                 "The latest public story update did not finish. Your progress and private "
-                "conversations are safe. Read the previous dispatch now, then return later."
+                "conversations are safe. Read the previous story update now, then return later."
             )
-            action = "Read the previous dispatch"
+            action = "Read the previous story update"
             href = f"/lighthouse/runs/{run.id}/archive"
         elif (
             recap is not None
@@ -958,16 +961,16 @@ def create_app(
                 f"{len(recap.panels)} new public "
                 f"{'scene has' if len(recap.panels) == 1 else 'scenes have'} been published. "
                 "Your saved progress and private conversations are safe. Start with the newest "
-                "dispatch below."
+                "published story update below."
             )
             action = "Read the new scenes"
             href = "#recap-heading"
         elif recap is not None and recap.panels:
             title = "New public scenes"
             body = (
-                f"Today’s dispatch contains {len(recap.panels)} public "
+                f"Today’s published story update contains {len(recap.panels)} public "
                 f"{'scene' if len(recap.panels) == 1 else 'scenes'}. Your saved progress and "
-                "private conversations are safe. Read the dispatch, then follow a thread."
+                "private conversations are safe. Read the story update, then follow a thread."
             )
             action = "Read today’s scenes"
             href = "#recap-heading"
@@ -982,7 +985,7 @@ def create_app(
 
         return f'''<section class="story-state" aria-labelledby="current-state-heading">
         <div><p class="eyebrow">Current story status</p><h2 id="current-state-heading">{escape(title)}</h2></div>
-        <div><div class="story-state__current" role="status" aria-live="polite" aria-atomic="true"><p class="eyebrow">Active now</p><p>{escape(body)}</p><a class="primary-action" href="{escape(href)}">{escape(action)} <span aria-hidden="true">→</span></a></div><details><summary>How updates work</summary><p>The Lighthouse shows one current status here. Public dispatches may change while you are away; your conversations remain private and saved to this visit.</p></details></div>
+        <div><div class="story-state__current" role="status" aria-live="polite" aria-atomic="true"><p class="eyebrow">Active now</p><p>{escape(body)}</p><a class="primary-action" href="{escape(href)}">{escape(action)} <span aria-hidden="true">→</span></a></div><details><summary>How updates work</summary><p>The Lighthouse shows one current status here. Published public story updates may change while you are away; your conversations remain private and saved to this visit.</p></details></div>
       </section>'''
 
     def load_run(run_id: UUID) -> tuple[RunRecord, WorldDefinition]:
@@ -1204,8 +1207,9 @@ def create_app(
                 '<nav class="unavailable-navigation" aria-label="Primary navigation">'
                 '<span aria-disabled="true">Today</span><span aria-disabled="true">Town</span>'
                 '<a href="/lighthouse/archive">Archive</a></nav>'
+                '<a class="help-link" href="/lighthouse/help">How to play</a>'
                 if has_history
-                else '<nav class="unavailable-navigation" aria-label="Story navigation unavailable while between seasons"><span aria-disabled="true">Today</span><span aria-disabled="true">Town</span><span aria-disabled="true">Archive</span></nav>'
+                else '<nav class="unavailable-navigation" aria-label="Story navigation unavailable while between seasons"><span aria-disabled="true">Today</span><span aria-disabled="true">Town</span><span aria-disabled="true">Archive</span></nav><a class="help-link" href="/lighthouse/help">How to play</a>'
             )
             document = (
                 document.replace("<!-- PRIMARY_NAVIGATION -->", navigation)
@@ -1265,8 +1269,8 @@ def create_app(
             else 1
         )
         document = document.replace(
-            "Greyhaven dispatch · Day one",
-            f"Latest published dispatch · Day {dispatch_day}",
+            "Published story update · Day one",
+            f"Latest published story update · Day {dispatch_day}",
         )
         replacements = {
             '/lighthouse/town"': f'/lighthouse/runs/{run.id}/town"',
@@ -1346,6 +1350,11 @@ def create_app(
     def lighthouse_feedback() -> HTMLResponse:
         """Offer a stable, privacy-conscious route for public product feedback."""
         return HTMLResponse((web_root / "feedback.html").read_text(encoding="utf-8"))
+
+    @app.get("/lighthouse/help", response_class=HTMLResponse, include_in_schema=False)
+    def lighthouse_help() -> HTMLResponse:
+        """Explain the Lighthouse interaction model without creating visitor state."""
+        return HTMLResponse((web_root / "help.html").read_text(encoding="utf-8"))
 
     @app.post("/lighthouse/session", include_in_schema=False)
     def enter_lighthouse(database: Annotated[Session, Depends(session)]) -> RedirectResponse:
@@ -2075,7 +2084,7 @@ def create_app(
             panels = public_location_panels(database, run.id, location_id)
             recap_panels = recap_panels_at(recap, location_id)
             if events or panels or recap_panels:
-                source = "public activity" if events else "a published dispatch"
+                source = "public activity" if events else "a published story update"
                 return LighthouseRecommendation(
                     kind="observe",
                     title=f"Look closer at {location.name}.",
@@ -2133,9 +2142,9 @@ def create_app(
             )
             return LighthouseRecommendation(
                 kind="read",
-                title="Read the latest published dispatch.",
+                title="Read the latest published story update.",
                 explanation=f"The episode is available now.{thread}",
-                cta_label="Read the dispatch",
+                cta_label="Read the story update",
                 href=f"/lighthouse/runs/{run.id}/archive/{recap_artifact.id}",
             )
 
@@ -2208,7 +2217,7 @@ def create_app(
     ) -> tuple[str, str]:
         recap = validated_recap(recap_artifact)
         if recap is None or recap_artifact is None:
-            panels = """<article class="recap-panel"><p class="panel-index">Public dispatch</p><h3>No episode has been published yet</h3><p>Greyhaven may still have live public activity. The recommendation alongside this briefing uses the current town state.</p></article>"""
+            panels = """<article class="recap-panel"><p class="panel-index">Published story update</p><h3>No episode has been published yet</h3><p>Greyhaven may still have live public activity. The recommendation alongside this briefing uses the current town state.</p></article>"""
             return panels, "<li><span>—</span> No published threads yet.</li>"
         href = f"/lighthouse/runs/{run.id}/archive/{recap_artifact.id}"
         panels = "".join(
@@ -2218,7 +2227,7 @@ def create_app(
             f'<a data-playable-action="read" href="{href}">Read the published episode <span aria-hidden="true">→</span></a></article>'
             for index, panel in enumerate(recap.panels, 1)
         ) or (
-            '<article class="recap-panel"><p class="panel-index">Quiet dispatch</p>'
+            '<article class="recap-panel"><p class="panel-index">Quiet story update</p>'
             f"<h3>{escape(recap.headline)}</h3><p>{escape(recap.dek)}</p>"
             f'<a data-playable-action="read" href="{href}">Read the published episode <span aria-hidden="true">→</span></a></article>'
         )
@@ -2227,7 +2236,7 @@ def create_app(
                 f"<li><span>{index:02}</span> {escape(thread)}</li>"
                 for index, thread in enumerate(recap.active_threads, 1)
             )
-            or "<li><span>—</span> No unresolved public threads in this dispatch.</li>"
+            or "<li><span>—</span> No unresolved public threads in this story update.</li>"
         )
         return panels, threads
 
@@ -2291,16 +2300,16 @@ def create_app(
                 or '<li class="quiet-note">No public event has been reported here yet.</li>'
             )
             persisted_panel_markup = "".join(
-                f'<article class="location-panel" data-meaningful-public-content="dispatch"><p class="eyebrow">Published dispatch</p><h3>{escape(item.title)}</h3><p>{escape(item.body)}</p></article>'
+                f'<article class="location-panel" data-meaningful-public-content="dispatch"><p class="eyebrow">Published story update</p><h3>{escape(item.title)}</h3><p>{escape(item.body)}</p></article>'
                 for item in panels
             )
             recap_panel_markup = "".join(
-                f'<article class="location-panel" data-meaningful-public-content="dispatch"><p class="eyebrow">Published dispatch</p><h3>{escape(item.title)}</h3><p>{escape(item.body)}</p></article>'
+                f'<article class="location-panel" data-meaningful-public-content="dispatch"><p class="eyebrow">Published story update</p><h3>{escape(item.title)}</h3><p>{escape(item.body)}</p></article>'
                 for item in recap_panels
             )
             panel_markup = (
                 persisted_panel_markup + recap_panel_markup
-                or '<p class="quiet-note">No episode panel points here yet. The archive will update after publication.</p>'
+                or '<p class="quiet-note">No story panel points here yet. The archive will update after publication.</p>'
             )
             if people:
                 person = people[0]
@@ -2367,7 +2376,7 @@ def create_app(
             town_action = lighthouse_recommendation(run, world, database, recap_artifact)
             detail = f"""
               <section class="town-intro" aria-labelledby="town-title">
-                <p class="eyebrow">Island field chart · Day {day}</p>
+                <p class="eyebrow">Town map · Day {day}</p>
                 <h1 id="town-title">Walk<br>Greyhaven.</h1>
                 <p>Choose a marked place to see its atmosphere, public activity, and the people who can be found there now.</p>
                 {recommendation_markup(town_action)}
@@ -2383,7 +2392,7 @@ def create_app(
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(page_title)} — The Lighthouse</title><link rel="stylesheet" href="/static/lighthouse.css"></head>
 <body><a class="skip-link" href="#town">Skip to the town</a>
 <header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {day} <span aria-hidden="true">·</span> {simulation_time.strftime("%H:%M")}</p>{lighthouse_navigation(run, current="town", include_people=include_people)}</header>
-<main id="town" class="town-experience" tabindex="-1">{stale}<div class="town-layout">{detail}<nav class="island-chart" aria-label="Greyhaven locations"><p class="chart-label">Public presence chart</p><ol>{map_links}</ol><p class="chart-key"><span aria-hidden="true">●</span> Positions only show public activity. Private movements remain private.</p></nav></div></main>
+<main id="town" class="town-experience" tabindex="-1">{stale}<div class="town-layout">{detail}<nav class="island-chart" aria-label="Town map: Greyhaven locations"><p class="chart-label">Town map</p><ol>{map_links}</ol><p class="chart-key"><span aria-hidden="true">●</span> Public whereabouts only. A resident may still be reachable for private contact when absent from the map.</p></nav></div></main>
 <footer><p>The Lighthouse is a living story by Rumor Mill.</p><p><span class="status-dot" aria-hidden="true"></span>Greyhaven is unfolding</p></footer></body></html>"""
 
     @app.get("/lighthouse/runs/{run_id}/town", response_class=HTMLResponse, include_in_schema=False)
@@ -2507,8 +2516,8 @@ def create_app(
         return {
             "live": "This is a live private exchange. Replies appear here as they arrive.",
             "asynchronous": "This exchange is asynchronous. Send a message and return here for replies.",
-            "delayed": "This private line accepts messages now, but replies may be delayed.",
-            "unavailable": "This private line is presently unavailable.",
+            "delayed": "This private conversation accepts messages now, but replies may be delayed.",
+            "unavailable": "Private contact is presently unavailable.",
         }[mode]
 
     def public_connections(world: WorldDefinition, character_id: str) -> list[AuthoredCharacter]:
@@ -2529,7 +2538,7 @@ def create_app(
 <body><a class="skip-link" href="#people">Skip to the cast</a>
 <header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>Day {story_day(run)} <span aria-hidden="true">·</span> {simulation_time.strftime("%H:%M")}</p>{lighthouse_navigation(run, current="people", include_people=True)}</header>
 <main id="people" class="cast-ledger" tabindex="-1">{content}</main>
-<footer><p>Your cast ledger only records public facts and encounters from this visit.</p><p><span class="status-dot" aria-hidden="true"></span>Private to you</p></footer></body></html>"""
+<footer><p>Your visit notes record public facts and encounters from this visit.</p><p><span class="status-dot" aria-hidden="true"></span>Private to you</p></footer></body></html>"""
 
     @app.get(
         "/lighthouse/runs/{run_id}/people", response_class=HTMLResponse, include_in_schema=False
@@ -2550,7 +2559,7 @@ def create_app(
                 state_model.relationship_summary
                 if state_model is not None
                 else (
-                    "Seen in a public dispatch. You have not spoken privately yet."
+                    "Seen in a published public story update. You have not spoken privately yet."
                     if recap_seen
                     else "Not yet encountered."
                 )
@@ -2558,7 +2567,7 @@ def create_app(
             cards.append(
                 f"""<li class="ledger-card"><a href="/lighthouse/runs/{run.id}/people/{escape(character.id)}"><span class="ledger-card__initial" aria-hidden="true">{escape(character.name[0])}</span><span class="eyebrow">{escape(availability)}</span><h2>{escape(character.name)}</h2><p>{escape(character.description)}</p><span class="ledger-note">{escape(note)}</span></a></li>"""
             )
-        content = f"""<header class="ledger-heading"><p class="eyebrow">Your cast ledger</p><h1>Who is<br>who?</h1><p>Public identities are printed in ink. Notes from your own encounters appear in the margins.</p></header><ul class="ledger-grid">{"".join(cards)}</ul>"""
+        content = f"""<header class="ledger-heading"><p class="eyebrow">Your visit notes</p><h1>Who is<br>who?</h1><p>Public identities are printed in ink. Notes from your own encounters appear in the margins.</p></header><ul class="ledger-grid">{"".join(cards)}</ul>"""
         return HTMLResponse(profile_shell(run, "People of Greyhaven", content))
 
     @app.get(
@@ -2597,11 +2606,13 @@ def create_app(
                     f"<li>{escape(str(item.get('content', 'A private exchange.')))}</li>"
                     for item in memories
                 )
-                or '<li class="quiet-note">You opened a private line, but no lasting note was made.</li>'
+                or '<li class="quiet-note">You opened a private conversation, but no lasting note was made.</li>'
             )
             relationship = state_model.relationship_summary
         elif recap_seen:
-            relationship = "You know them from a public dispatch, but have not spoken privately."
+            relationship = (
+                "You know them from a published public story update, but have not spoken privately."
+            )
             memory_markup = '<li class="quiet-note">No private encounters yet.</li>'
         else:
             relationship = "You have not encountered this person yet."
@@ -2618,10 +2629,10 @@ def create_app(
             else (
                 '<section class="private-contact" aria-labelledby="private-contact-title"><h2 id="private-contact-title">Private contact</h2><p class="offline-note">This season is no longer live. Your previous notes remain available here, but new contact is read-only.</p><button class="primary-action" type="button" disabled>Season contact closed</button></section>'
                 if historical
-                else f'<section class="private-contact" aria-labelledby="private-contact-title"><h2 id="private-contact-title">Private contact</h2><p class="offline-note">{escape(contact_copy)}</p><button class="primary-action" type="button" disabled>Private line unavailable</button></section>'
+                else f'<section class="private-contact" aria-labelledby="private-contact-title"><h2 id="private-contact-title">Private contact</h2><p class="offline-note">{escape(contact_copy)}</p><button class="primary-action" type="button" disabled>Private contact unavailable</button></section>'
             )
         )
-        content = f"""<article class="profile-file" aria-labelledby="profile-name"><a class="back-link" href="/lighthouse/runs/{run.id}/people">← Return to the cast ledger</a><header><div class="profile-monogram" aria-hidden="true">{escape(character.name[0])}</div><div><p class="eyebrow">Public character file</p><h1 id="profile-name">{escape(character.name)}</h1><p class="profile-bio">{escape(character.description)}</p></div></header><div class="profile-facts"><section><h2>Voice</h2><p>{escape(character.public_voice or "Their voice is not publicly known yet.")}</p></section><section><h2>Whereabouts</h2><p>{location_markup}</p></section><section><h2>Known connections</h2><ul>{connections_markup}</ul></section></div><aside class="margin-notes" aria-labelledby="notes-title"><p class="eyebrow">Written from your visit</p><h2 id="notes-title">What stands between you</h2><p class="relationship-cue">{escape(relationship)}</p><h3>Your remembered exchanges</h3><ul>{memory_markup}</ul></aside>{talk_markup}</article>"""
+        content = f"""<article class="profile-file" aria-labelledby="profile-name"><a class="back-link" href="/lighthouse/runs/{run.id}/people">← Return to People</a><header><div class="profile-monogram" aria-hidden="true">{escape(character.name[0])}</div><div><p class="eyebrow">Public character file</p><h1 id="profile-name">{escape(character.name)}</h1><p class="profile-bio">{escape(character.description)}</p></div></header><div class="profile-facts"><section><h2>Voice</h2><p>{escape(character.public_voice or "Their voice is not publicly known yet.")}</p></section><section><h2>Whereabouts</h2><p>{location_markup}</p></section><section><h2>Known connections</h2><ul>{connections_markup}</ul></section></div><aside class="margin-notes" aria-labelledby="notes-title"><p class="eyebrow">Written from your visit</p><h2 id="notes-title">What stands between you</h2><p class="relationship-cue">{escape(relationship)}</p><h3>Your remembered exchanges</h3><ul>{memory_markup}</ul></aside>{talk_markup}</article>"""
         return HTMLResponse(profile_shell(run, character.name, content))
 
     def published_recaps(database: Session, run_id: UUID) -> list[ArtifactModel]:
@@ -2676,18 +2687,18 @@ def create_app(
             )
         )
         if awaiting and any(item.status in ("failed", "dead") for item in recap_jobs):
-            return "A dispatch could not be published. The story operator has been notified and can retry it safely."
+            return "A public story update could not be published. The story operator has been notified and can retry it safely."
         if awaiting and any(item.status in ("pending", "running") for item in recap_jobs):
             return "A completed story day is being prepared for the archive now."
         if awaiting:
             return "A completed story day is awaiting publication. The story operator can inspect the recap pipeline."
         if source_dates:
-            return "Today's public story is still unfolding. Its dispatch is published after the story day closes."
-        return "No public story dispatch has been filed yet."
+            return "Today's public story is still unfolding. Its story update is published after the story day closes."
+        return "No public story update has been filed yet."
 
     def story_so_far(recaps: list[ArtifactModel]) -> str:
         if not recaps:
-            return "No public dispatch has been published to the archive yet."
+            return "No public story update has been published to the archive yet."
         summaries = [DailyRecap.model_validate(item.payload["recap"]).dek for item in recaps]
         return " ".join(summaries[-4:])
 
@@ -2702,7 +2713,7 @@ def create_app(
     ) -> str:
         return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#071a26"><title>{escape(title)} — The Lighthouse</title><meta name="description" content="{escape(description)}"><meta property="og:type" content="article"><meta property="og:title" content="{escape(title)} — The Lighthouse"><meta property="og:description" content="{escape(description)}"><meta property="og:url" content="{escape(canonical_path)}"><meta property="og:site_name" content="The Lighthouse"><meta property="og:image" content="/static/lighthouse-social.jpg"><meta name="twitter:card" content="summary_large_image"><link rel="canonical" href="{escape(canonical_path)}"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/lighthouse.css"></head>
-<body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>{escape(live_clock_label(run))}</p>{lighthouse_navigation(run, current="archive", include_people=include_people)}</header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only public dispatches appear here; private conversations stay private.</p><p><span class="status-dot" aria-hidden="true"></span>Published in season order</p></footer></body></html>"""
+<body><a class="skip-link" href="#archive">Skip to the archive</a><header class="site-header"><a class="wordmark" href="/lighthouse"><span class="wordmark__beam" aria-hidden="true"></span><span>The Lighthouse</span></a><p class="town-clock"><span class="status-dot" aria-hidden="true"></span>{escape(live_clock_label(run))}</p>{lighthouse_navigation(run, current="archive", include_people=include_people)}</header><main id="archive" class="season-archive" tabindex="-1">{content}</main><footer><p>Only published public story updates appear here; private conversations stay private.</p><p><span class="status-dot" aria-hidden="true"></span>Published in season order</p></footer></body></html>"""
 
     def season_selection_markup(database: Session, run_id: UUID) -> str:
         history = published_archive_runs(database)
@@ -2792,7 +2803,7 @@ def create_app(
                 f'<article class="archive-panel"><p class="eyebrow">Panel {panel_index + 1:02}</p><h2>{escape(panel.title)}</h2><p>{escape(panel.body)}</p><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=recap_panel&amp;target_id={panel.source_id}&amp;artifact_id={artifact.id}">Flag this panel</a></article>'
                 for panel_index, panel in enumerate(recap.panels)
             )
-            or '<p class="archive-empty">This quiet-day dispatch contains no panels.</p>'
+            or '<p class="archive-empty">This quiet-day story update contains no panels.</p>'
         )
         previous_link = (
             f'<a rel="prev" href="/lighthouse/runs/{run.id}/archive/{recaps[index - 1].id}">← Previous episode</a>'
@@ -2804,7 +2815,7 @@ def create_app(
             if index + 1 < len(recaps)
             else "<span>You are caught up</span>"
         )
-        content = f"""<article class="episode-page" data-meaningful-public-content="dispatch" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={artifact.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{artifact.generated_at.isoformat()}">Published {artifact.generated_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={artifact.id}&amp;artifact_id={artifact.id}">Flag this episode</a></header><section class="archive-panels" aria-label="Episode panels">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
+        content = f"""<article class="episode-page" data-meaningful-public-content="dispatch" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={artifact.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{artifact.generated_at.isoformat()}">Published {artifact.generated_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={artifact.id}&amp;artifact_id={artifact.id}">Flag this episode</a></header><section class="archive-panels" aria-label="Story panels">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
         selected = selected_story(database, token)
         return HTMLResponse(
             archive_shell(
@@ -3225,7 +3236,7 @@ def create_app(
             label = (
                 f"Message {character.name} privately"
                 if available
-                else ("Season contact closed" if historical else "Private line unavailable")
+                else ("Season contact closed" if historical else "Private contact unavailable")
             )
             disabled = "" if available else " disabled"
             contact_copy = private_contact_copy(
@@ -3296,7 +3307,7 @@ def create_app(
         if run.status != RunStatus.RUNNING:
             line_status = "This season is no longer live. This private exchange is read-only."
             page = page.replace(
-                '<form class="dispatch-console" id="composer" aria-busy="false">\n        <label for="message">What do you ask?</label>\n        <textarea id="message" maxlength="4000" required rows="3"></textarea>\n        <div><span id="count">0 / 4000</span><button type="submit">Send across the line</button></div>\n      </form>',
+                '<form class="dispatch-console" id="composer" aria-busy="false">\n        <label for="message">What do you ask?</label>\n        <textarea id="message" maxlength="4000" required rows="3"></textarea>\n        <div><span id="count">0 / 4000</span><button type="submit">Send privately</button></div>\n      </form>',
                 '<p class="line-status" role="status"><strong>This season is read-only.</strong> You can review this private exchange, but cannot send new messages.</p>',
             )
         return HTMLResponse(

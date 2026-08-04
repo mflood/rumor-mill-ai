@@ -226,6 +226,6 @@ def test_player_can_complete_story_lifecycle_and_return(tmp_path: Path) -> None:
                 assert "00:03" in page.text
 
             today = return_visit.get("/lighthouse/today")
-            assert "Latest published dispatch · Day 1" in today.text
+            assert "Latest published story update · Day 1" in today.text
     finally:
         engine.dispose()

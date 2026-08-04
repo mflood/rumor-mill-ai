@@ -48,7 +48,7 @@ a { color: inherit; }
   margin: auto;
   padding: .8rem var(--space-2);
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto auto auto;
   align-items: center;
   gap: var(--space-3);
   border-bottom: 1px solid rgb(215 226 223 / 25%);
@@ -66,6 +66,16 @@ a { color: inherit; }
 nav { display: flex; gap: .35rem; }
 nav a { min-height: 2.75rem; padding: .8rem .75rem; text-decoration: none; }
 nav a[aria-current="page"] { border-bottom: 2px solid var(--signal); }
+.help-link {
+  min-height: 2.75rem;
+  display: inline-flex;
+  align-items: center;
+  padding: .7rem .15rem;
+  color: var(--sun);
+  font-weight: 700;
+  white-space: nowrap;
+  text-underline-offset: .25rem;
+}
 
 main { overflow: hidden; }
 .opening {
@@ -308,7 +318,7 @@ footer a { text-underline-offset: .25rem; }
 .location-panel h3 { margin: 0; font: 700 2rem/.95 var(--display); text-transform: uppercase; }
 .location-panel .eyebrow { color: #9d2c25; }
 
-/* Character profiles: a visitor's cast ledger, with earned notes in the margins. */
+/* Character profiles: a visitor's private visit notes, with earned details in the margins. */
 .cast-ledger { max-width: var(--reading); margin: auto; padding: var(--space-4) var(--space-2); }
 .ledger-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, .55fr); align-items: end; gap: var(--space-3); padding-bottom: var(--space-4); }
 .ledger-heading .eyebrow { grid-column: 1 / -1; }
@@ -383,12 +393,27 @@ footer a { text-underline-offset: .25rem; }
 .episode-navigation { min-height: 5rem; padding: var(--space-2) 0; display: flex; justify-content: space-between; gap: 1rem; border-top: 1px solid rgb(215 226 223 / 25%); }
 .episode-navigation a, .episode-navigation span { min-height: 2.75rem; display: flex; align-items: center; color: var(--sun); font: 700 .68rem var(--utility); text-transform: uppercase; }
 
+.help-page { width: min(100%, 64rem); margin: auto; padding: var(--space-4) var(--space-2); overflow-wrap: anywhere; }
+.help-page__heading { padding-bottom: var(--space-4); border-bottom: .4rem solid var(--signal); }
+.help-page__heading h1 { max-width: 12ch; font-size: clamp(3.4rem, 9vw, 7rem); }
+.help-page__heading > p:last-child { max-width: 46rem; margin: var(--space-3) 0 0; font-size: clamp(1.05rem, 2vw, 1.3rem); }
+.help-page > section { padding: var(--space-3) 0; border-bottom: 1px solid rgb(215 226 223 / 25%); }
+.help-page section h2 { max-width: 15ch; margin: 0 0 var(--space-2); font-size: clamp(2.4rem, 6vw, 4.5rem); }
+.help-page section > p, .help-page section > ul, .help-page section > ol, .help-page section > dl { max-width: 48rem; }
+.help-steps { padding-left: 1.4rem; }
+.help-steps li { margin-bottom: 1rem; padding-left: .5rem; }
+.help-definitions { display: grid; gap: 1rem; }
+.help-definitions div { padding: var(--space-2); background: var(--deep-water); border-left: .3rem solid var(--sun); }
+.help-definitions dt { margin-bottom: .4rem; color: var(--sun); font: 700 .78rem var(--utility); letter-spacing: .08em; text-transform: uppercase; }
+.help-definitions dd { margin: 0; }
+
 @keyframes weather { to { transform: translate3d(-2rem, 3rem, 0); } }
 @media (max-width: 700px) {
   .site-header { grid-template-columns: 1fr auto; gap: .5rem; }
   .town-clock { text-align: right; }
   nav { grid-column: 1 / -1; justify-content: space-around; border-top: 1px solid rgb(215 226 223 / 15%); }
   nav a { flex: 1; text-align: center; }
+  .site-header > .help-link { grid-column: 1 / -1; justify-content: center; border-top: 1px solid rgb(215 226 223 / 15%); }
   .opening { grid-template-columns: 1fr; padding-top: var(--space-2); }
   .opening__art { min-height: 52svh; order: -1; box-shadow: .55rem .55rem 0 var(--signal); }
   .opening::after { left: 70%; }
@@ -446,6 +471,7 @@ footer a { text-underline-offset: .25rem; }
   .wordmark__beam { display: none; }
   .site-header nav { gap: 0; }
   .site-header nav a { min-width: 0; padding: .7rem .1rem; font-size: .55rem; }
+  .help-page { padding-top: var(--space-3); }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .rain { animation: none; } }
 @media (forced-colors: active) { .opening__art, .primary-action { border: 2px solid CanvasText; box-shadow: none; } .status-dot { forced-color-adjust: none; } }
