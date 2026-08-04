@@ -516,8 +516,8 @@ def test_worker_claims_completes_and_never_runs_job_twice(scheduler_database) ->
 
 
 def test_worker_reclaims_expired_lease_and_backs_off_failures(
-    scheduler_database, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+    scheduler_database: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = scheduler_database
     run = seed(factory)
     job_id = add_job(factory, run, max_attempts=2)
@@ -559,8 +559,8 @@ def test_worker_reclaims_expired_lease_and_backs_off_failures(
 
 
 def test_job_attempt_logs_are_correlated_bounded_and_privacy_safe(
-    scheduler_database, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+    scheduler_database: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     factory = scheduler_database
     run = seed(factory)
     private_values = (

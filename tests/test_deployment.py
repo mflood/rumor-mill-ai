@@ -117,7 +117,9 @@ def test_production_metrics_fail_closed_without_a_configured_key(tmp_path: Path)
     engine.dispose()
 
 
-def test_worker_heartbeats_and_advances_persisted_runs(tmp_path: Path, monkeypatch) -> None:
+def test_worker_heartbeats_and_advances_persisted_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url = f"sqlite:///{tmp_path / 'worker.db'}"
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
@@ -637,8 +639,8 @@ def test_worker_logs_safe_actionable_routine_time_failure(  # type: ignore[no-un
 
 
 def test_worker_entrypoint_configuration_and_identity(
-    monkeypatch,
-) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DYNO", "worker.9")
     assert worker_id() == "worker.9"
     monkeypatch.delenv("DYNO")
