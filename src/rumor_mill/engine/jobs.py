@@ -1,11 +1,15 @@
 """Durable background-job claiming, execution, and recovery."""
 
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from rumor_mill.engine.ports import JobRecord, ProviderError, UnitOfWork
+from rumor_mill.observability import bind_correlation, correlation_id, job_id
+
+logger = logging.getLogger(__name__)
 
 
 class PreparedMutation(Protocol):
@@ -58,6 +62,8 @@ class DurableJobWorker:
         if job is None:
             return WorkerResult(None)
 
+        job_token = job_id.set(str(job.id))
+        correlation_token = bind_correlation(f"job:{job.id}")
         try:
             handler = self._handlers[job.kind]
             mutation = handler(job)
@@ -71,6 +77,16 @@ class DurableJobWorker:
                 ):
                     raise LeaseLostError("job lease was lost before completion")
                 unit_of_work.commit()
+            logger.info(
+                "durable_job_completed",
+                extra={
+                    "run_id": str(job.run_id),
+                    "job_kind": job.kind,
+                    "attempt": job.attempts,
+                    "max_attempts": job.max_attempts,
+                    "resulting_status": "completed",
+                },
+            )
             return WorkerResult(job, completed=True)
         except LeaseLostError:
             with self._unit_of_work_factory() as unit_of_work:
@@ -87,7 +103,25 @@ class DurableJobWorker:
                     error=self._safe_error(exc),
                 )
                 unit_of_work.commit()
+            logger.warning(
+                "durable_job_attempt_failed",
+                extra={
+                    "run_id": str(job.run_id),
+                    "job_kind": job.kind,
+                    "attempt": failed.attempts,
+                    "max_attempts": failed.max_attempts,
+                    "resulting_status": failed.status.value,
+                    "error_category": self._safe_error(exc),
+                    "backoff_seconds": int(delay.total_seconds()),
+                    "retry_at": None
+                    if failed.status.value == "dead"
+                    else (failed_at + delay).isoformat(),
+                },
+            )
             return WorkerResult(failed)
+        finally:
+            correlation_id.reset(correlation_token)
+            job_id.reset(job_token)
 
     @staticmethod
     def _safe_error(exc: Exception) -> str:
@@ -96,4 +130,4 @@ class DurableJobWorker:
             return exc.code
         if isinstance(exc, KeyError):
             return "unknown_job_kind"
-        return f"{type(exc).__name__}: {exc}"[:4000]
+        return type(exc).__name__[:200]

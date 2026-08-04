@@ -80,6 +80,7 @@ class OpenAIProvider:
         logger.info(
             "model_generation_started",
             extra={
+                "call_id": str(call_id),
                 "provider": self.provider_name,
                 "model": self._model,
                 "purpose": request.purpose,
@@ -118,6 +119,7 @@ class OpenAIProvider:
             logger.warning(
                 "model_generation_failed",
                 extra={
+                    "call_id": str(call_id),
                     "provider": self.provider_name,
                     "model": self._model,
                     "error_code": error.code,
@@ -128,6 +130,15 @@ class OpenAIProvider:
     def stream(self, request: GenerationRequest) -> Iterator[StreamEvent]:
         call_id, messages, started = self._start_trace(request)
         sequence = 0
+        logger.info(
+            "model_stream_started",
+            extra={
+                "call_id": str(call_id),
+                "provider": self.provider_name,
+                "model": self._model,
+                "purpose": request.purpose,
+            },
+        )
         try:
             client = self._client.with_options(
                 timeout=request.timeout_seconds, max_retries=request.max_retries
@@ -170,6 +181,16 @@ class OpenAIProvider:
                 "error",
                 {"error_code": error.code, "retryable": error.retryable},
                 started,
+            )
+            logger.warning(
+                "model_stream_failed",
+                extra={
+                    "call_id": str(call_id),
+                    "provider": self.provider_name,
+                    "model": self._model,
+                    "purpose": request.purpose,
+                    "error_code": error.code,
+                },
             )
             raise error from exc
 

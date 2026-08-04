@@ -103,17 +103,32 @@ def test_json_formatter_adds_correlation_without_private_fields() -> None:
 
 def test_json_logging_configures_existing_and_missing_handlers() -> None:
     root = logging.getLogger()
+    application = logging.getLogger("rumor_mill")
     original = root.handlers[:]
+    original_root_level = root.level
+    original_application_level = application.level
+    worker_logger = logging.getLogger("rumor_mill.worker")
+    original_worker_disabled = worker_logger.disabled
     try:
+        application.disabled = True
+        worker_logger.disabled = True
         root.handlers.clear()
         configure_json_logging()
         assert isinstance(root.handlers[0].formatter, JsonFormatter)
+        assert root.level == logging.WARNING
+        assert application.level == logging.INFO
+        assert not application.disabled
+        assert not worker_logger.disabled
+        assert logging.getLogger("sqlalchemy").getEffectiveLevel() >= logging.WARNING
         existing = logging.StreamHandler()
         root.handlers[:] = [existing]
         configure_json_logging()
         assert isinstance(existing.formatter, JsonFormatter)
     finally:
         root.handlers[:] = original
+        root.setLevel(original_root_level)
+        application.setLevel(original_application_level)
+        worker_logger.disabled = original_worker_disabled
 
 
 def test_sliding_window_rate_limiter_recovers_after_window() -> None:

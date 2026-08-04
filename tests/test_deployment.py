@@ -117,7 +117,9 @@ def test_production_metrics_fail_closed_without_a_configured_key(tmp_path: Path)
     engine.dispose()
 
 
-def test_worker_heartbeats_and_advances_persisted_runs(tmp_path: Path) -> None:
+def test_worker_heartbeats_and_advances_persisted_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     url = f"sqlite:///{tmp_path / 'worker.db'}"
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
@@ -139,8 +141,21 @@ def test_worker_heartbeats_and_advances_persisted_runs(tmp_path: Path) -> None:
 
     now = START + timedelta(minutes=30)
     worker = SimulationWorker(factory, worker_id="worker.1", clock=lambda: now)
+    logged: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "rumor_mill.worker.logger.info",
+        lambda event, *, extra: logged.append({"event": event, **extra}),
+    )
     assert worker.poll_once() == 1
+
+    advancement = next(item for item in logged if item["event"] == "simulation_run_advanced")
+    assert advancement["run_id"] == str(run.id)
+    assert advancement["ticks"] == 3
+    assert advancement["jobs_enqueued"] == 0
+    assert advancement["catch_up_limited"] is True
+    logged.clear()
     assert worker.poll_once() == 0
+    assert logged == []
 
     with factory() as database:
         stored = database.get(RunModel, run.id)
@@ -433,7 +448,20 @@ def test_story_job_failure_leaves_pipeline_fresh_for_retry(tmp_path: Path, monke
         worker_id="worker.retry",
         clock=lambda: started_at + timedelta(minutes=10),
     )
+    logged: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "rumor_mill.worker.logger.info",
+        lambda event, *, extra: logged.append({"event": event, **extra}),
+    )
     assert worker.poll_once() == 1
+    polled = next(item for item in logged if item["event"] == "story_jobs_polled")
+    assert tuple(polled[key] for key in ("claimed", "completed", "retried", "dead", "pending")) == (
+        1,
+        0,
+        1,
+        0,
+        0,
+    )
     with factory() as database:
         job = database.scalar(select(JobModel).where(JobModel.run_id == bootstrapped.run_id))
         heartbeat = database.get(WorkerHeartbeatModel, "worker.retry")
@@ -610,7 +638,9 @@ def test_worker_logs_safe_actionable_routine_time_failure(  # type: ignore[no-un
     engine.dispose()
 
 
-def test_worker_entrypoint_configuration_and_identity(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_worker_entrypoint_configuration_and_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DYNO", "worker.9")
     assert worker_id() == "worker.9"
     monkeypatch.delenv("DYNO")
@@ -645,7 +675,17 @@ def test_worker_entrypoint_configuration_and_identity(monkeypatch) -> None:  # t
         sentinel_factory,  # type: ignore[arg-type]
         worker_id="stopped",
     )
+    lifecycle: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "rumor_mill.worker.logger.info",
+        lambda event, *, extra: lifecycle.append({"event": event, **extra}),
+    )
     real_worker.run_forever(already_stopped)
+    assert [record["event"] for record in lifecycle] == [
+        "simulation_worker_started",
+        "simulation_worker_stopped",
+    ]
+    assert lifecycle[0]["worker_id"] == "stopped"
 
 
 class FakeResponse:
