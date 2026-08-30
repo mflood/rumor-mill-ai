@@ -15,6 +15,11 @@
       <header class="radio-room__heading"><p class="eyebrow">A private word with</p><h1>{{ character_name }}</h1><p>Only you and {{ character_name }} can read this exchange.</p></header>
       <ol class="signal-wire" id="messages" aria-live="polite" aria-label="Conversation history"></ol>
       <p class="line-status" id="line-status" role="status">{{ line_status }}</p>
+      <div class="suggested-questions" id="suggested-questions" aria-label="Suggested questions">
+        <button type="button" data-suggested-question>What happened to Elias?</button>
+        <button type="button" data-suggested-question>Where were you last night?</button>
+        <button type="button" data-suggested-question>What do you know about Northlight?</button>
+      </div>
       <form class="dispatch-console" id="composer" aria-busy="false">
         <label for="message">What do you ask?</label>
         <textarea id="message" maxlength="4000" required rows="3"></textarea>

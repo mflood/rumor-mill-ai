@@ -9,8 +9,19 @@
   const submit = form.querySelector('button[type="submit"]');
   const status = document.querySelector("#line-status");
   const count = document.querySelector("#count");
+  const suggestions = document.querySelector("#suggested-questions");
   let isSubmitting = false;
   let pendingSubmission = null;
+
+  const hideSuggestions = () => { if (suggestions) suggestions.hidden = true; };
+  suggestions?.querySelectorAll("[data-suggested-question]").forEach((button) => {
+    button.addEventListener("click", () => {
+      input.value = button.textContent;
+      count.textContent = `${input.value.length} / 4000`;
+      hideSuggestions();
+      input.focus();
+    });
+  });
 
   const setSubmitting = (submitting) => {
     isSubmitting = submitting;
@@ -44,6 +55,7 @@
     room.dataset.runId = conversation.run_id;
     conversation.messages.forEach(render);
     list.lastElementChild?.scrollIntoView({ block: "end" });
+    if (conversation.messages.length > 0) hideSuggestions();
   };
 
   input.addEventListener("input", () => { count.textContent = `${input.value.length} / 4000`; });
@@ -51,6 +63,7 @@
     event.preventDefault();
     const content = input.value.trim();
     if (!content || isSubmitting) return;
+    hideSuggestions();
     if (!pendingSubmission || pendingSubmission.content !== content) {
       pendingSubmission = { content, clientMessageId: crypto.randomUUID() };
     }
