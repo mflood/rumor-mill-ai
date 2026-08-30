@@ -33,7 +33,7 @@ def smoke(base_url: str, opener: Callable[..., Any] | None = None) -> None:
                 raise RuntimeError(f"{path} static asset smoke check failed")
     for path, marker in (
         ("/lighthouse", b'property="og:title"'),
-        ("/lighthouse/feedback", b"Share feedback on GitHub"),
+        ("/lighthouse/feedback", b"Send feedback"),
     ):
         with opener(f"{base_url}{path}", timeout=15) as response:
             if response.status != 200 or marker not in response.read():

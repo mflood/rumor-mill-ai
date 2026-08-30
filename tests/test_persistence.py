@@ -49,6 +49,7 @@ TABLES = {
     "jobs",
     "artifacts",
     "narrative_reports",
+    "feedback_submissions",
     "worker_heartbeats",
     "operator_audit_entries",
     "llm_trace_messages",

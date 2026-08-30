@@ -738,7 +738,7 @@ def test_deployment_smoke_checks_health_assets_and_public_pages() -> None:
         elif url.endswith(("/health/live", "/health/product")):
             body = b'{"status":"ok"}'
         elif url.endswith("/lighthouse/feedback"):
-            body = b"Share feedback on GitHub"
+            body = b"Send feedback"
         elif url.endswith("/lighthouse/session"):
             return FakeResponse(
                 b'property="og:title" data-primary-recommendation="true" '
@@ -781,7 +781,7 @@ def test_deployment_smoke_rejects_unhealthy_responses() -> None:
         response(200, b"css"),
         response(200, b"svg"),
         response(200, b'property="og:title"'),
-        response(200, b"Share feedback on GitHub"),
+        response(200, b"Send feedback"),
     ]
     ready = response(
         200,

@@ -156,5 +156,5 @@ def test_public_launch_metadata_assets_and_feedback_route() -> None:
     assert favicon.status_code == 200
     assert favicon.headers["content-type"].startswith("image/svg+xml")
     assert feedback.status_code == 200
-    assert "Share feedback on GitHub" in feedback.text
+    assert "Send feedback" in feedback.text
     assert "SECURITY.md" in feedback.text

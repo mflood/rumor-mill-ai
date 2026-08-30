@@ -25,6 +25,7 @@ from rumor_mill.adapters.persistence.models import (
     Base,
     ConversationModel,
     EventModel,
+    FeedbackModel,
     JobModel,
     NarrativeReportModel,
     OperatorAuditModel,
@@ -274,6 +275,43 @@ def test_lighthouse_help_does_not_mutate_an_active_visit(api) -> None:  # type: 
         )
 
     assert after == before
+
+
+def test_lighthouse_feedback_form_stores_submissions_and_rejects_empty_content(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+
+    empty_page = client.get("/lighthouse/feedback")
+    assert empty_page.status_code == 200
+    assert '<form class="visitor-ledger" action="/lighthouse/feedback" method="post">' in (
+        empty_page.text
+    )
+
+    rejected = client.post("/lighthouse/feedback", data={"content": "   "})
+    assert rejected.status_code == 422
+    assert "Feedback cannot be empty." in rejected.text
+    with factory() as database:
+        assert database.scalar(select(func.count()).select_from(FeedbackModel)) == 0
+
+    anonymous = client.post("/lighthouse/feedback", data={"content": "Loved the ending!"})
+    assert anonymous.status_code == 200
+    assert "Thank you" in anonymous.text
+    with factory() as database:
+        stored = database.scalar(select(FeedbackModel))
+        assert stored is not None
+        assert stored.content == "Loved the ending!"
+        assert stored.visitor_id is None
+        assert stored.page_path == "/lighthouse/feedback"
+
+    start_visitor_session(client)
+    with_visitor = client.post("/lighthouse/feedback", data={"content": "A bug report."})
+    assert with_visitor.status_code == 200
+    with factory() as database:
+        submissions = list(
+            database.scalars(select(FeedbackModel).order_by(FeedbackModel.created_at))
+        )
+        assert len(submissions) == 2
+        assert submissions[1].content == "A bug report."
+        assert submissions[1].visitor_id is not None
 
 
 def test_lighthouse_historical_archive_and_people_are_safe_and_read_only(api) -> None:  # type: ignore[no-untyped-def]
@@ -2879,6 +2917,14 @@ def test_operator_console_auth_empty_state_and_confirmed_recovery(api) -> None: 
     assert "No worlds or runs exist" in empty.text
     assert "Last clock advancement" not in empty.text
     assert "Queue depth: 0" in empty.text
+    assert "No feedback submitted yet." in empty.text
+
+    with factory.begin() as database:
+        database.add(FeedbackModel(content="The archive is a delight."))
+    with_feedback = client.get("/operator/console")
+    assert "The archive is a delight." in with_feedback.text
+    assert "anonymous" in with_feedback.text
+    assert "Most recent 1 submission(s)." in with_feedback.text
 
     run_id = UUID(str(initialize(client)["id"]))
     progress_at = datetime.now(UTC)
