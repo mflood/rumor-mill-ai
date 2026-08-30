@@ -15,7 +15,17 @@ from typing import Annotated, Any, Generic, Literal, TypeVar
 from urllib.parse import parse_qs, quote
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import (
+    Cookie,
+    Depends,
+    FastAPI,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import http_exception_handler as default_http_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -44,6 +54,7 @@ from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
     ConversationModel,
     EventModel,
+    FeedbackModel,
     JobModel,
     NarrativeReportModel,
     OperatorAuditModel,
@@ -1389,10 +1400,52 @@ def create_app(
             )
         return RedirectResponse(f"/lighthouse/runs/{run.id}/archive", status_code=307)
 
+    def feedback_form_markup(*, error: str | None = None) -> str:
+        error_markup = f'<p class="feedback-note" role="alert">{escape(error)}</p>' if error else ""
+        return f"""<form class="visitor-ledger" action="/lighthouse/feedback" method="post">
+        <p>Found a rough edge, have an idea, or want to tell us what stayed with you? Send it directly — no account needed. Please do not include private information, secrets, or unpublished story material.</p>
+        {error_markup}
+        <label for="feedback-content" class="visually-hidden">Your feedback</label>
+        <textarea id="feedback-content" name="content" maxlength="4000" required rows="5" placeholder="What's on your mind?"></textarea>
+        <button class="primary-action" type="submit">Send feedback <span aria-hidden="true">→</span></button>
+      </form>"""
+
+    def feedback_thanks_markup() -> str:
+        return (
+            '<p class="feedback-note"><strong>Thank you.</strong> Your feedback was received.</p>'
+        )
+
     @app.get("/lighthouse/feedback", response_class=HTMLResponse, include_in_schema=False)
     def lighthouse_feedback() -> HTMLResponse:
         """Offer a stable, privacy-conscious route for public product feedback."""
-        return HTMLResponse((web_root / "feedback.html").read_text(encoding="utf-8"))
+        document = (web_root / "feedback.html").read_text(encoding="utf-8")
+        return HTMLResponse(document.replace("<!-- FEEDBACK_STATE -->", feedback_form_markup()))
+
+    @app.post("/lighthouse/feedback", response_class=HTMLResponse, include_in_schema=False)
+    def submit_lighthouse_feedback(
+        database: Annotated[Session, Depends(session)],
+        content: Annotated[str, Form()],
+        token: Annotated[str | None, Cookie(alias="rm_visitor")] = None,
+    ) -> HTMLResponse:
+        """Store public product feedback without requiring an account."""
+        document = (web_root / "feedback.html").read_text(encoding="utf-8")
+        trimmed = content.strip()
+        if not trimmed:
+            state = feedback_form_markup(error="Feedback cannot be empty.")
+            return HTMLResponse(
+                document.replace("<!-- FEEDBACK_STATE -->", state),
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        visitor = optional_visitor(database, token)
+        database.add(
+            FeedbackModel(
+                content=trimmed[:4000],
+                page_path="/lighthouse/feedback",
+                visitor_id=visitor.id if visitor is not None else None,
+            )
+        )
+        database.commit()
+        return HTMLResponse(document.replace("<!-- FEEDBACK_STATE -->", feedback_thanks_markup()))
 
     @app.get("/lighthouse/help", response_class=HTMLResponse, include_in_schema=False)
     def lighthouse_help() -> HTMLResponse:
@@ -1723,7 +1776,26 @@ def create_app(
             if pipeline is not None
             else f"<small>Queue depth: {queue_depth}</small>"
         )
-        body = f"""<form class="inline" action="/operator/session/logout" method="post" style="float:right"><button>Sign out</button></form><p class="muted">Rumor Mill</p><h1>Live story console</h1>{notice}<div class="grid"><div class="card"><strong>Infrastructure</strong><br><span class="ok">Web and database connected</span></div><div class="card"><strong>Story availability</strong><br><span class="{"ok" if story else "bad"}">{availability}</span></div><div class="card"><strong>Worker heartbeat</strong><br><span class="{"ok" if worker_ok else "bad"}">{"Fresh" if worker_ok else "Missing or stale"}</span><br><small>{_aware(heartbeat).isoformat() if heartbeat else "No heartbeat"}</small></div><div class="card"><strong>Story pipeline</strong><br><span class="{"ok" if pipeline_ok else "bad"}">{pipeline_detail}</span><br>{progress}</div><div class="card"><strong>Runs</strong><br>{len(runs)}</div></div>{"".join(run_cards) or "<section><h2>Empty production state</h2><p>No worlds or runs exist. Run the documented Lighthouse bootstrap recovery command.</p></section>"}"""
+        feedback_submissions = list(
+            database.scalars(
+                select(FeedbackModel).order_by(FeedbackModel.created_at.desc()).limit(50)
+            )
+        )
+        feedback_rows = (
+            "".join(
+                f"<tr><td>{escape(item.created_at.isoformat())}</td>"
+                f"<td>{escape(str(item.visitor_id) if item.visitor_id else 'anonymous')}</td>"
+                f"<td>{escape(item.content)}</td></tr>"
+                for item in feedback_submissions
+            )
+            or '<tr><td colspan="3">No feedback submitted yet.</td></tr>'
+        )
+        feedback_section = (
+            f'<section><h2>Player feedback</h2><p class="muted">Most recent '
+            f"{len(feedback_submissions)} submission(s).</p><table><tr><th>Submitted</th>"
+            f"<th>Visitor</th><th>Content</th></tr>{feedback_rows}</table></section>"
+        )
+        body = f"""<form class="inline" action="/operator/session/logout" method="post" style="float:right"><button>Sign out</button></form><p class="muted">Rumor Mill</p><h1>Live story console</h1>{notice}<div class="grid"><div class="card"><strong>Infrastructure</strong><br><span class="ok">Web and database connected</span></div><div class="card"><strong>Story availability</strong><br><span class="{"ok" if story else "bad"}">{availability}</span></div><div class="card"><strong>Worker heartbeat</strong><br><span class="{"ok" if worker_ok else "bad"}">{"Fresh" if worker_ok else "Missing or stale"}</span><br><small>{_aware(heartbeat).isoformat() if heartbeat else "No heartbeat"}</small></div><div class="card"><strong>Story pipeline</strong><br><span class="{"ok" if pipeline_ok else "bad"}">{pipeline_detail}</span><br>{progress}</div><div class="card"><strong>Runs</strong><br>{len(runs)}</div></div>{"".join(run_cards) or "<section><h2>Empty production state</h2><p>No worlds or runs exist. Run the documented Lighthouse bootstrap recovery command.</p></section>"}{feedback_section}"""
         return operator_page("Live story console", body)
 
     @app.get(

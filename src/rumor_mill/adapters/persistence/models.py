@@ -411,3 +411,18 @@ class NarrativeReportModel(IdMixin, CreatedMixin, Base):
         ),
         Index("ix_narrative_reports_run_created", "run_id", "created_at"),
     )
+
+
+class FeedbackModel(IdMixin, CreatedMixin, Base):
+    __tablename__ = "feedback_submissions"
+
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    page_path: Mapped[str | None] = mapped_column(String(200))
+    visitor_id: Mapped[UUID | None] = mapped_column(
+        Uuid, ForeignKey("visitors.id", ondelete="SET NULL"), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(content) > 0", name="nonempty_content"),
+        Index("ix_feedback_submissions_created", "created_at"),
+    )
