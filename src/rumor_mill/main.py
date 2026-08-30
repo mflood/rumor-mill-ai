@@ -3141,10 +3141,16 @@ def create_app(
             )
             for item in state_model.memories[-12:]
         )
+        trust_disclosure_threshold = 0.6
         secret_boundaries = tuple(
             DisclosureBoundary(
                 topic=item.id,
-                instruction="Do not disclose this protected claim in this conversation.",
+                instruction=(
+                    "You may admit this if the visitor presses you with specific, "
+                    "well-reasoned questions; do not volunteer it unprompted."
+                    if float(state_model.trust) >= trust_disclosure_threshold
+                    else "Do not disclose this protected claim in this conversation."
+                ),
                 protected_claim_ids=(ClaimId(uuid5(namespace, f"claim:{item.id}")),),
             )
             for item in known_secrets
@@ -3311,6 +3317,8 @@ def create_app(
                     "salience": output.conversation_memory.salience,
                 },
             ][-50:]
+        if output.trust_delta:
+            state_model.trust = max(0.0, min(1.0, float(state_model.trust) + output.trust_delta))
         state_model.updated_at = datetime.now(UTC)
         database.commit()
         database.refresh(model)
