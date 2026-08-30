@@ -2602,11 +2602,12 @@ def test_streaming_conversation_is_idempotent_private_and_recovers(api) -> None:
 
 
 def test_character_knowledge_and_disclosure_are_gated_on_beat_completion(api) -> None:  # type: ignore[no-untyped-def]
-    """Regression test for P0-2: a character's knowledge must track beat progression.
+    """Regression test for P0-1/P0-2: a character's knowledge must track beat progression.
 
-    tests/fixtures/worlds/minimal.json has Bea learn `key-opens-observatory` from the
-    `hidden-key` beat, and stop absolutely protecting `bea-has-key` once `quiet-question`
-    reveals it. Before those beats complete, neither should be visible to the model.
+    tests/fixtures/worlds/minimal.json has Bea learn `key-opens-observatory` and discover
+    the `market-ledger` clue (her home is the clue's location) from the `hidden-key` beat,
+    and stop absolutely protecting `bea-has-key` once `quiet-question` reveals it. Before
+    those beats complete, none of that should be visible to the model.
     """
     client, factory = api
     provider = cast(MutableConversationProvider, client.app_state["conversation_provider"])
@@ -2630,6 +2631,7 @@ def test_character_knowledge_and_disclosure_are_gated_on_beat_completion(api) ->
     ask("What do you know about the observatory?")
     before = sent_text()
     assert "The brass key opens the abandoned observatory." not in before
+    assert "A ledger recording deliveries to the archive." not in before
     assert "Do not disclose this protected claim" in before
 
     now = datetime.now(UTC)
@@ -2651,6 +2653,7 @@ def test_character_knowledge_and_disclosure_are_gated_on_beat_completion(api) ->
     ask("What do you know about the observatory now?")
     after_established = sent_text()
     assert "The brass key opens the abandoned observatory." in after_established
+    assert "A ledger recording deliveries to the archive." in after_established
     assert "Do not disclose this protected claim" in after_established
 
     with factory() as database:
