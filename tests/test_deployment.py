@@ -154,6 +154,17 @@ def test_worker_heartbeats_and_advances_persisted_runs(
     assert advancement["jobs_enqueued"] == 0
     assert advancement["catch_up_limited"] is True
     logged.clear()
+
+    # The first poll only consumed 15 of the 30 elapsed minutes (capped by
+    # max_catch_up_ticks). A bounded catch-up must not discard the remaining
+    # wall-clock time, so the very next poll (at the same `now`) should keep
+    # catching up rather than going idle.
+    assert worker.poll_once() == 1
+    second_advancement = next(item for item in logged if item["event"] == "simulation_run_advanced")
+    assert second_advancement["ticks"] == 3
+    assert second_advancement["catch_up_limited"] is False
+    logged.clear()
+
     assert worker.poll_once() == 0
     assert logged == []
 
@@ -161,7 +172,7 @@ def test_worker_heartbeats_and_advances_persisted_runs(
         stored = database.get(RunModel, run.id)
         heartbeat = database.scalar(select(WorkerHeartbeatModel))
         assert stored is not None
-        assert stored.simulation_time.replace(tzinfo=UTC) == START + timedelta(minutes=15)
+        assert stored.simulation_time.replace(tzinfo=UTC) == START + timedelta(minutes=30)
         assert heartbeat is not None
         assert heartbeat.worker_id == "worker.1"
         assert heartbeat.last_seen_at.replace(tzinfo=UTC) == now

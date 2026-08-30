@@ -297,6 +297,12 @@ def test_location_context_keeps_home_current_presence_and_contact_distinct() -> 
     )
     assert unknown.current_location_id is None
 
+    with pytest.raises(ValidationError, match="home location ID and name"):
+        ConversationLocationContext(
+            home_location_id=LocationId(uid(3)),
+            publicly_present=False,
+            private_contact_mode="live",
+        )
     with pytest.raises(ValidationError, match="current location ID and name"):
         ConversationLocationContext(
             current_location_id=LocationId(uid(3)),

@@ -94,7 +94,10 @@ class SimulationScheduler:
                     )
                     enqueued += unit_of_work.jobs.add_once(job)
 
-                unit_of_work.runs.update_clock(run.id, simulation_time=target, wall_time_anchor=now)
+                consumed = timedelta(seconds=ticks * run.tick_seconds / run.clock_rate)
+                unit_of_work.runs.update_clock(
+                    run.id, simulation_time=target, wall_time_anchor=anchor + consumed
+                )
             unit_of_work.commit()
             return AdvanceResult(previous, target, ticks, enqueued, limited)
 

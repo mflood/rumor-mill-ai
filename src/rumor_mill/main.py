@@ -408,10 +408,22 @@ def create_app(
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
-            "form-action 'self'; object-src 'none'"
-        )
+        if request.url.path in {"/docs", "/redoc"}:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+                "form-action 'self'; object-src 'none'; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "img-src 'self' data: https://fastapi.tiangolo.com; "
+                "font-src 'self' https://fonts.gstatic.com"
+            )
+        else:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
+                "form-action 'self'; object-src 'none'; "
+                "style-src 'self' https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com"
+            )
         elapsed = (datetime.now(UTC) - started).total_seconds()
         metrics.increment(
             "http_requests_total", method=request.method, status=str(response.status_code)

@@ -123,6 +123,31 @@ def test_private_routine_is_known_without_claiming_public_presence_or_home() -> 
     assert location.publicly_present is False
 
 
+def test_character_location_state_rejects_unknown_character() -> None:
+    with pytest.raises(KeyError, match="missing"):
+        TownState(world_with_routines()).character_location_state("missing", day=1, at=time(8))
+
+
+def test_character_location_state_rejects_ambiguous_overlapping_routines() -> None:
+    definition = world_with_routines().model_dump(mode="json")
+    definition["routines"].append(
+        {
+            "id": "ada-second-place",
+            "character_id": "ada",
+            "location_id": "archive",
+            "days": [1],
+            "start_time": "07:00",
+            "end_time": "09:00",
+            "activity": "Also somehow at the archive.",
+            "public_activity": "Making deliveries.",
+        }
+    )
+    world = WorldDefinition.model_validate(definition)
+
+    with pytest.raises(ValueError, match="ambiguous current location"):
+        TownState(world).character_location_state("ada", day=1, at=time(8))
+
+
 def test_presence_rejects_unknown_locations_and_days() -> None:
     state = TownState(world_with_routines())
 

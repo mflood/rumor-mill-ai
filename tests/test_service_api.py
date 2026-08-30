@@ -2429,9 +2429,14 @@ def test_browser_security_controls_and_session_rotation(api) -> None:  # type: i
 
     response = client.get("/api/v1/visitors/me")
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
+    assert "https://fonts.googleapis.com" in response.headers["content-security-policy"]
+    assert "https://fonts.gstatic.com" in response.headers["content-security-policy"]
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "same-origin"
     assert "access-control-allow-origin" not in response.headers
+
+    docs = client.get("/docs")
+    assert "https://cdn.jsdelivr.net" in docs.headers["content-security-policy"]
 
     rejected = client.delete(
         "/api/v1/visitors/session", headers={"Origin": "https://attacker.example"}

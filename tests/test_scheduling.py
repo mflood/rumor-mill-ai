@@ -150,6 +150,41 @@ def test_catch_up_is_bounded_and_accelerated(scheduler_database) -> None:  # typ
     assert result.catch_up_limited
 
 
+def test_bounded_catch_up_preserves_leftover_time_for_the_next_advance(
+    scheduler_database,  # type: ignore[no-untyped-def]
+) -> None:
+    """Regression test: a capped catch-up must not silently drop elapsed wall time.
+
+    Resetting the anchor to "now" after a capped advance discards whatever wall-clock
+    time the cap couldn't consume, so the simulation clock permanently falls behind.
+    The anchor must instead move only by the wall-clock time the applied ticks actually
+    consumed, leaving the remainder available to the next advance().
+    """
+    factory = scheduler_database
+    world = WorldRecord(uid(1), "fast-world", 1, {}, START)
+    run = RunRecord(
+        uid(2),
+        uid(1),
+        RunStatus.RUNNING,
+        1,
+        START,
+        clock_rate=2,
+        tick_seconds=300,
+        max_catch_up_ticks=2,
+    )
+    seed_run(SqlAlchemyUnitOfWork(factory), world, run)
+    clock = FixedClock(START + timedelta(minutes=30))
+    scheduler = SimulationScheduler(lambda: SqlAlchemyUnitOfWork(factory), clock=clock)
+
+    first = scheduler.advance(run.id)
+    assert first.ticks == 2
+    assert first.catch_up_limited
+
+    second = scheduler.advance(run.id)
+    assert second.ticks == 2
+    assert second.catch_up_limited
+
+
 def test_scheduler_rejects_invalid_inputs_and_work(scheduler_database) -> None:  # type: ignore[no-untyped-def]
     factory = scheduler_database
     run = seed(factory)

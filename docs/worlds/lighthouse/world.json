@@ -69,7 +69,10 @@
     {"id": "tomas-workshop", "character_id": "tomas", "location_id": "net-loft", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "06:30", "end_time": "09:00", "activity": "Opening the workshop.", "public_activity": "Workshop repairs."},
     {"id": "iris-office", "character_id": "iris", "location_id": "council-rooms", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "09:00", "end_time": "11:00", "activity": "Holding council office.", "public_activity": "Open council office."},
     {"id": "june-dispatch", "character_id": "june", "location_id": "harbor-dispatch", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "06:00", "end_time": "14:00", "activity": "Operating the radio.", "public_activity": "Radio watch and notices."},
-    {"id": "orin-copies", "character_id": "orin", "location_id": "orin-cottage", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "14:00", "end_time": "17:00", "activity": "Copying old station notes.", "public_activity": "Lamp repair and copying."}
+    {"id": "orin-copies", "character_id": "orin", "location_id": "orin-cottage", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "14:00", "end_time": "17:00", "activity": "Copying old station notes.", "public_activity": "Lamp repair and copying."},
+    {"id": "tomas-night", "character_id": "tomas", "location_id": "net-loft", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "00:00", "end_time": "05:30", "activity": "Patching gear before dawn.", "public_activity": "Overnight net repairs."},
+    {"id": "nell-evening", "character_id": "nell", "location_id": "breakwater-inn", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "17:00", "end_time": "21:30", "activity": "Nursing a drink and watching the door.", "public_activity": "Evening watch at the inn."},
+    {"id": "nell-late", "character_id": "nell", "location_id": "breakwater-inn", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "21:30", "end_time": "23:59:59", "activity": "Arguing tide charts with anyone still awake.", "public_activity": "Late tally at the inn."}
   ],
   "travel_routes": [
     {"id": "dispatch-council", "from_location_id": "harbor-dispatch", "to_location_id": "council-rooms", "minutes": 5},
