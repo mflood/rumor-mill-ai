@@ -22,6 +22,7 @@ from rumor_mill.adapters.persistence import (
 )
 from rumor_mill.adapters.persistence.models import (
     ArtifactModel,
+    EventModel,
     JobModel,
     RunModel,
     SceneModel,
@@ -32,7 +33,11 @@ from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.bootstrap import _bootstrap_session
 from rumor_mill.config import Settings
 from rumor_mill.deployment import smoke
-from rumor_mill.engine.lighthouse_pipeline import LighthouseStoryHandler, RoutineTimeError
+from rumor_mill.engine.lighthouse_pipeline import (
+    LighthouseStoryHandler,
+    RoutineTimeError,
+    _stable_id,
+)
 from rumor_mill.engine.ports import (
     ClockMode,
     JobRecord,
@@ -335,6 +340,13 @@ def test_production_shaped_bootstrap_advances_executes_and_publishes_once(tmp_pa
         # The town/location pages match panels to a location by this authored id
         # (e.g. "harbor-dispatch"), not the derived per-run location UUID.
         assert story_card.payload["location_id"] == "harbor-dispatch"
+        # Unlike artifacts, Event.location_id is the derived per-run domain id — the
+        # location page's "recent public events" query must scope to match (P1-4).
+        event = database.scalar(select(EventModel).where(EventModel.run_id == bootstrapped.run_id))
+        assert event is not None
+        assert event.payload["location_id"] == str(
+            _stable_id(bootstrapped.run_id, "location", "harbor-dispatch")
+        )
         assert heartbeat is not None and heartbeat.story_pipeline_ready
         assert heartbeat.last_clock_advanced_at is not None
         assert heartbeat.last_story_job_enqueued_at is not None

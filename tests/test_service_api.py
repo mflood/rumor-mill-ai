@@ -40,6 +40,7 @@ from rumor_mill.adapters.persistence.published_recaps import latest_published_re
 from rumor_mill.adapters.providers import DeterministicFakeProvider
 from rumor_mill.config import Settings
 from rumor_mill.engine.conversation import CharacterConversationEngine
+from rumor_mill.engine.lighthouse_pipeline import _stable_id
 from rumor_mill.engine.ports import (
     GenerationRequest,
     ProviderError,
@@ -530,6 +531,9 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
     assert fetched["messages"][2]["kind"] == "hesitation"
 
     now = datetime.now(UTC)
+    # Event.location_id is persisted as the derived per-run domain id (see
+    # LighthouseStoryHandler._stable_id), not the authored world.json slug.
+    scoped_market_id = str(_stable_id(UUID(str(run_id)), "location", "market"))
     with factory() as database:
         database.add_all(
             [
@@ -539,7 +543,7 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
                     sequence=1,
                     occurred_at=now,
                     summary="Ada opened the market shutters.",
-                    payload={"visibility": "public", "location_id": "market"},
+                    payload={"visibility": "public", "location_id": scoped_market_id},
                 ),
                 EventModel(
                     id=uuid4(),
@@ -547,7 +551,7 @@ def test_full_simulation_api_lifecycle(api) -> None:  # type: ignore[no-untyped-
                     sequence=2,
                     occurred_at=now,
                     summary="A private exchange took place.",
-                    payload={"visibility": "engine_only", "location_id": "market"},
+                    payload={"visibility": "engine_only", "location_id": scoped_market_id},
                 ),
                 ArtifactModel(
                     id=uuid4(),
