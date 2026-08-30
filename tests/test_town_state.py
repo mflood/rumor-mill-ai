@@ -1,10 +1,14 @@
 """Tests for spoiler-safe authored town-state queries."""
 
 from datetime import time
+from pathlib import Path
 
 import pytest
 
-from rumor_mill.worlds import TownState, WorldDefinition
+from rumor_mill.engine.domain import Visibility
+from rumor_mill.worlds import TownState, WorldDefinition, load_world
+
+ROOT = Path(__file__).parents[1]
 
 
 def world_with_routines() -> WorldDefinition:
@@ -172,3 +176,24 @@ def test_schedule_and_routes_constrain_scene_planning() -> None:
         state.can_stage_scene(("ada",), location_id="missing", day=1, at=time(8))
     with pytest.raises(KeyError, match="unknown location"):
         state.travel_minutes("missing", "market")
+
+
+def test_lighthouse_world_routines_cover_every_minute_of_the_day() -> None:
+    """Regression test for P1-3: no minute of the day should have zero public residents.
+
+    Nell's late-inn routine previously ended at 23:59:59, leaving the last fraction of
+    the day (up to midnight) with nobody publicly present anywhere.
+    """
+    world = load_world(ROOT / "docs/worlds/lighthouse/world.json")
+    public_routines = [item for item in world.routines if item.visibility is Visibility.PUBLIC]
+
+    def covered(minute: int) -> bool:
+        at = time(minute // 60, minute % 60)
+        return any(
+            1 in routine.days and routine.start_time <= at < routine.end_time
+            for routine in public_routines
+        )
+
+    uncovered = [minute for minute in range(24 * 60) if not covered(minute)]
+
+    assert uncovered == []

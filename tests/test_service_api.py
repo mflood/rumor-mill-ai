@@ -2884,6 +2884,10 @@ def test_character_picker_and_conversation_page_are_server_rendered(api) -> None
     assert "if (!content || isSubmitting) return" in script.text
     assert "pendingSubmission = null" in script.text
     assert 'aria-busy="false"' in page.text
+    # Regression test for P1-1: a refusal must still show the character's name, not a
+    # generic stance label — only "Action" stays as its own distinct signal.
+    assert '"Boundary"' not in script.text
+    assert '"Hesitation"' not in script.text
 
 
 def test_unavailable_character_cannot_start_a_conversation(api) -> None:  # type: ignore[no-untyped-def]
