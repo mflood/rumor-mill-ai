@@ -31,7 +31,8 @@
       "id": "archive",
       "name": "Market Archive",
       "description": "A locked room above the west stalls.",
-      "parent_location_id": "market"
+      "parent_location_id": "market",
+      "clue_ids": ["market-ledger"]
     }
   ],
   "initial_relationships": [
@@ -76,7 +77,8 @@
         "summary": "Ada sees Bea conceal a brass key beneath the west stall.",
         "character_ids": ["ada", "bea"],
         "location_id": "market",
-        "establishes_truth_ids": ["key-opens-observatory"]
+        "establishes_truth_ids": ["key-opens-observatory"],
+        "discovers_clue_ids": ["market-ledger"]
       },
       {
         "id": "quiet-question",

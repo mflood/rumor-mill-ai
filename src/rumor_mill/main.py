@@ -3072,6 +3072,8 @@ def create_app(
         completed_beats = completed_beat_ids(database, run)
         established_by_beat: dict[str, bool] = {}
         revealed_by_beat: dict[str, bool] = {}
+        discovered_by_beat: dict[str, bool] = {}
+        clue_witness_ids: dict[str, set[str]] = {}
         for beat in world.beat_graph.beats:
             for truth_id in beat.establishes_truth_ids:
                 established_by_beat[truth_id] = (
@@ -3081,6 +3083,14 @@ def create_app(
                 revealed_by_beat[secret_id] = (
                     revealed_by_beat.get(secret_id, False) or beat.id in completed_beats
                 )
+            for clue_id in beat.discovers_clue_ids:
+                discovered_by_beat[clue_id] = (
+                    discovered_by_beat.get(clue_id, False) or beat.id in completed_beats
+                )
+                clue_witness_ids.setdefault(clue_id, set()).update(beat.character_ids)
+        location_by_clue = {
+            clue_id: location.id for location in world.locations for clue_id in location.clue_ids
+        }
         # A truth with no establishing beat is foundational context, always available.
         known_truth = [
             item
@@ -3088,6 +3098,17 @@ def create_app(
             if character.id in item.character_ids and established_by_beat.get(item.id, True)
         ]
         known_secrets = [item for item in world.secrets if character.id in item.known_by_ids]
+        # A discovered clue is knowable to a character who witnessed the discovering beat,
+        # or whose home puts them at the clue's location.
+        known_clues = [
+            item
+            for item in world.clues
+            if discovered_by_beat.get(item.id, False)
+            and (
+                character.id in clue_witness_ids.get(item.id, set())
+                or location_by_clue.get(item.id) == character.home_location_id
+            )
+        ]
         truth_beliefs = tuple(
             ConversationBelief(
                 claim_id=ClaimId(uuid5(namespace, f"claim:{item.id}")),
@@ -3104,7 +3125,15 @@ def create_app(
             )
             for item in known_secrets
         )
-        beliefs = truth_beliefs + secret_beliefs
+        clue_beliefs = tuple(
+            ConversationBelief(
+                claim_id=ClaimId(uuid5(namespace, f"claim:clue:{item.id}")),
+                statement=f"{item.name}: {item.description}",
+                confidence=1,
+            )
+            for item in known_clues
+        )
+        beliefs = truth_beliefs + secret_beliefs + clue_beliefs
         memories = tuple(
             ConversationMemory(
                 memory_id=MemoryId(UUID(item["id"])),
