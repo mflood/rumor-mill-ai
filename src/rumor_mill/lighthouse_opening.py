@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from rumor_mill.adapters.persistence.models import ArtifactModel
-from rumor_mill.engine.recap import DailyRecap, RecapPanel
+from rumor_mill.engine.recap import DailyRecap, RecapPanel, RecapThread
 
 
 def opening_recap_id(run_id: UUID) -> UUID:
@@ -57,9 +57,9 @@ def opening_recap(run_id: UUID, started_at: datetime) -> DailyRecap:
             ),
         ),
         active_threads=(
-            "What crossed the lantern room?",
-            "Who was beneath the cliff?",
-            "Why was the skiff lamp warm?",
+            RecapThread(text="What crossed the lantern room?", character_id="mara"),
+            RecapThread(text="Who was beneath the cliff?", location_id="widows-steps"),
+            RecapThread(text="Why was the skiff lamp warm?", character_id="elias"),
         ),
         suggested_location_ids=("northlight", "harbor-dispatch", "widows-steps"),
         suggested_character_ids=("mara", "elias"),

@@ -40,6 +40,16 @@ class RecapPanel(BaseModel):
     character_id: str | None = None
 
 
+class RecapThread(BaseModel):
+    """An unresolved public thread, linked to whoever or wherever can advance it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str
+    character_id: str | None = None
+    location_id: str | None = None
+
+
 class DailyRecap(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -47,7 +57,7 @@ class DailyRecap(BaseModel):
     headline: str
     dek: str
     panels: tuple[RecapPanel, ...]
-    active_threads: tuple[str, ...]
+    active_threads: tuple[RecapThread, ...]
     suggested_location_ids: tuple[str, ...]
     suggested_character_ids: tuple[str, ...]
     state: str
@@ -75,7 +85,15 @@ def build_daily_recap(story_date: date, sources: list[RecapSource]) -> DailyReca
         )
         for item in selected
     )
-    threads = tuple(dict.fromkeys(item.active_thread for item in selected if item.active_thread))
+    threads_by_text: dict[str, RecapThread] = {}
+    for item in selected:
+        if item.active_thread and item.active_thread not in threads_by_text:
+            threads_by_text[item.active_thread] = RecapThread(
+                text=item.active_thread,
+                character_id=item.character_id,
+                location_id=item.location_id,
+            )
+    threads = tuple(threads_by_text.values())
     locations = tuple(dict.fromkeys(item.location_id for item in selected if item.location_id))
     characters = tuple(dict.fromkeys(item.character_id for item in selected if item.character_id))
     if not panels:

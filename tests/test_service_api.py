@@ -49,7 +49,13 @@ from rumor_mill.engine.ports import (
     RunStatus,
     StreamEvent,
 )
-from rumor_mill.engine.recap import DailyRecap, RecapPanel, RecapSource, build_daily_recap
+from rumor_mill.engine.recap import (
+    DailyRecap,
+    RecapPanel,
+    RecapSource,
+    RecapThread,
+    build_daily_recap,
+)
 from rumor_mill.main import create_app
 
 ROOT = Path(__file__).parents[1]
@@ -1832,7 +1838,7 @@ def test_today_and_archive_share_one_published_recap_contract(api) -> None:  # t
                     character_id="ada",
                 ),
             ),
-            active_threads=("Who rang the bell?",),
+            active_threads=(RecapThread(text="Who rang the bell?", character_id="ada"),),
             suggested_location_ids=("market",),
             suggested_character_ids=("ada",),
             state="active",
@@ -1860,6 +1866,10 @@ def test_today_and_archive_share_one_published_recap_contract(api) -> None:  # t
     assert 'data-panel-count="1"' in one_archive.text
     assert "First persisted dispatch" in one_today.text
     assert "First persisted dispatch" in one_archive.text
+    # Regression test for P1-5: a thread with a character target renders as a link to
+    # their profile, not plain text with nowhere to click.
+    assert "Who rang the bell?" in one_today.text
+    assert f'<a href="/lighthouse/runs/{run_id}/people/ada">Ask Ada' in one_today.text
     # Each panel card on Today deep-links to its own dispatch on the episode page.
     dispatch_href = f"/lighthouse/runs/{run_id}/archive/{first_id}#dispatch-{first_source}"
     assert f'href="{dispatch_href}"' in one_today.text
@@ -1875,7 +1885,7 @@ def test_today_and_archive_share_one_published_recap_contract(api) -> None:  # t
             headline="Second persisted dispatch",
             dek="The latest successful publication.",
             panels=(),
-            active_threads=("What happens after quiet?",),
+            active_threads=(RecapThread(text="What happens after quiet?"),),
             suggested_location_ids=("market",),
             suggested_character_ids=("ada",),
             state="quiet_day",
@@ -1908,7 +1918,7 @@ def test_today_and_archive_share_one_published_recap_contract(api) -> None:  # t
         view = latest_published_recap(database, run_id)
         assert view is not None
         assert view.id == second_id
-        assert view.active_threads == ("What happens after quiet?",)
+        assert view.active_threads == (RecapThread(text="What happens after quiet?"),)
         assert view.suggested_location_ids == ("market",)
         assert view.suggested_character_ids == ("ada",)
 
@@ -2464,7 +2474,7 @@ def test_recap_candidate_fallbacks_skip_invalid_or_unavailable_suggestions(api) 
         **payload,
         "recap": {
             **cast(dict[str, object], payload["recap"]),
-            "active_threads": ["Who closed the courier route?"],
+            "active_threads": [{"text": "Who closed the courier route?"}],
         },
     }
     with factory() as database:

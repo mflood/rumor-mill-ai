@@ -97,7 +97,7 @@ from rumor_mill.engine.ports import (
     RunStatus,
     WorldRecord,
 )
-from rumor_mill.engine.recap import PUBLIC_RECAP_SOURCE_KINDS, DailyRecap, RecapPanel
+from rumor_mill.engine.recap import PUBLIC_RECAP_SOURCE_KINDS, DailyRecap, RecapPanel, RecapThread
 from rumor_mill.engine.recap_publication import DAILY_RECAP_JOB, publish_daily_recap
 from rumor_mill.engine.scheduling import SimulationScheduler
 from rumor_mill.observability import (
@@ -1359,7 +1359,7 @@ def create_app(
         }
         for old, new in replacements.items():
             document = document.replace(old, new)
-        panels, threads = published_recap_markup(run, latest_recap)
+        panels, threads = published_recap_markup(run, latest_recap, world)
         action = lighthouse_recommendation(run, world, database, latest_recap)
         document = document.replace("<!-- PUBLISHED_RECAP -->", panels)
         document = document.replace("<!-- ACTIVE_THREADS -->", threads)
@@ -2273,7 +2273,9 @@ def create_app(
 
         if recap is not None:
             thread = (
-                f" Follow the thread: {recap.active_threads[0]}" if recap.active_threads else ""
+                f" Follow the thread: {recap.active_threads[0].text}"
+                if recap.active_threads
+                else ""
             )
             return LighthouseRecommendation(
                 kind="read",
@@ -2347,7 +2349,9 @@ def create_app(
             <a class="primary-action" data-primary-recommendation="true" data-playable-action="{action.kind}" href="{escape(action.href)}">{escape(action.cta_label)} <span aria-hidden="true">→</span></a>
           </div>'''
 
-    def published_recap_markup(run: RunRecord, recap: PublishedRecapView | None) -> tuple[str, str]:
+    def published_recap_markup(
+        run: RunRecord, recap: PublishedRecapView | None, world: WorldDefinition
+    ) -> tuple[str, str]:
         if recap is None:
             panels = """<article class="recap-panel"><p class="panel-index">Published story update</p><h3>No episode has been published yet</h3><p>Greyhaven may still have live public activity. The recommendation alongside this briefing uses the current town state.</p></article>"""
             return panels, "<li><span>—</span> No published threads yet.</li>"
@@ -2364,9 +2368,27 @@ def create_app(
             f"<h3>{escape(recap.headline)}</h3><p>{escape(recap.dek)}</p>"
             f'<a data-playable-action="read" href="{base_href}">Read the published episode <span aria-hidden="true">→</span></a></article>'
         )
+        character_by_id = {item.id: item for item in world.cast}
+        location_by_id = {item.id: item for item in world.locations}
+
+        def thread_link(thread: RecapThread) -> str:
+            if thread.character_id is not None and thread.character_id in character_by_id:
+                character = character_by_id[thread.character_id]
+                return (
+                    f' <a href="/lighthouse/runs/{run.id}/people/{escape(character.id)}">'
+                    f'Ask {escape(character.name)} <span aria-hidden="true">→</span></a>'
+                )
+            if thread.location_id is not None and thread.location_id in location_by_id:
+                location = location_by_id[thread.location_id]
+                return (
+                    f' <a href="/lighthouse/runs/{run.id}/town/{escape(location.id)}">'
+                    f'Look at {escape(location.name)} <span aria-hidden="true">→</span></a>'
+                )
+            return ""
+
         threads = (
             "".join(
-                f"<li><span>{index:02}</span> {escape(thread)}</li>"
+                f"<li><span>{index:02}</span> {escape(thread.text)}{thread_link(thread)}</li>"
                 for index, thread in enumerate(recap.active_threads, 1)
             )
             or "<li><span>—</span> No unresolved public threads in this story update.</li>"
