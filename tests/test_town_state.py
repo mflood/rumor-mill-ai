@@ -197,3 +197,25 @@ def test_lighthouse_world_routines_cover_every_minute_of_the_day() -> None:
     uncovered = [minute for minute in range(24 * 60) if not covered(minute)]
 
     assert uncovered == []
+
+
+def test_lighthouse_world_keeps_at_least_two_residents_present_at_all_times() -> None:
+    """Regression test for P1-2: the town must never thin out to a single resident.
+
+    A prior schedule had 67% of the day at exactly one resident (or fewer) — a visitor
+    could easily land in a window where only one of seven locations was occupied.
+    """
+    world = load_world(ROOT / "docs/worlds/lighthouse/world.json")
+    public_routines = [item for item in world.routines if item.visibility is Visibility.PUBLIC]
+
+    def concurrency(minute: int) -> int:
+        at = time(minute // 60, minute % 60)
+        return sum(
+            1
+            for routine in public_routines
+            if 1 in routine.days and routine.start_time <= at < routine.end_time
+        )
+
+    thin_minutes = [minute for minute in range(24 * 60) if concurrency(minute) <= 1]
+
+    assert thin_minutes == []

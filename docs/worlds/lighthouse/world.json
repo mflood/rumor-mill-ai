@@ -65,12 +65,16 @@
   },
   "routines": [
     {"id": "mara-dawn", "character_id": "mara", "location_id": "northlight", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "05:30", "end_time": "08:30", "activity": "Reading the lens and search reports.", "public_activity": "Dawn lighthouse work."},
-    {"id": "mara-watch", "character_id": "mara", "location_id": "northlight", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "18:30", "end_time": "21:30", "activity": "Keeping evening watch.", "public_activity": "Evening lighthouse watch."},
+    {"id": "mara-watch", "character_id": "mara", "location_id": "northlight", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "17:00", "end_time": "21:30", "activity": "Keeping evening watch.", "public_activity": "Evening lighthouse watch."},
     {"id": "tomas-workshop", "character_id": "tomas", "location_id": "net-loft", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "06:30", "end_time": "09:00", "activity": "Opening the workshop.", "public_activity": "Workshop repairs."},
-    {"id": "iris-office", "character_id": "iris", "location_id": "council-rooms", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "09:00", "end_time": "11:00", "activity": "Holding council office.", "public_activity": "Open council office."},
+    {"id": "iris-office", "character_id": "iris", "location_id": "council-rooms", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "09:00", "end_time": "14:00", "activity": "Holding council office.", "public_activity": "Open council office."},
+    {"id": "iris-evening", "character_id": "iris", "location_id": "breakwater-inn", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "17:00", "end_time": "21:00", "activity": "Talking through recovery costs over a drink.", "public_activity": "Evening at the inn."},
     {"id": "june-dispatch", "character_id": "june", "location_id": "harbor-dispatch", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "06:00", "end_time": "14:00", "activity": "Operating the radio.", "public_activity": "Radio watch and notices."},
+    {"id": "orin-early", "character_id": "orin", "location_id": "orin-cottage", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "00:00", "end_time": "06:00", "activity": "Unable to sleep, checking old charts by lamplight.", "public_activity": "Late-night lamp work."},
     {"id": "orin-copies", "character_id": "orin", "location_id": "orin-cottage", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "14:00", "end_time": "17:00", "activity": "Copying old station notes.", "public_activity": "Lamp repair and copying."},
     {"id": "tomas-night", "character_id": "tomas", "location_id": "net-loft", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "00:00", "end_time": "05:30", "activity": "Patching gear before dawn.", "public_activity": "Overnight net repairs."},
+    {"id": "tomas-afternoon", "character_id": "tomas", "location_id": "net-loft", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "14:00", "end_time": "17:00", "activity": "Continuing repairs into the afternoon.", "public_activity": "Afternoon net repairs."},
+    {"id": "tomas-late", "character_id": "tomas", "location_id": "net-loft", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "21:30", "end_time": "23:59:59.999999", "activity": "Locking up the loft for the night.", "public_activity": "Closing the net loft."},
     {"id": "nell-evening", "character_id": "nell", "location_id": "breakwater-inn", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "17:00", "end_time": "21:30", "activity": "Nursing a drink and watching the door.", "public_activity": "Evening watch at the inn."},
     {"id": "nell-late", "character_id": "nell", "location_id": "breakwater-inn", "days": [1,2,3,4,5,6,7,8,9,10,11,12,13,14], "start_time": "21:30", "end_time": "23:59:59.999999", "activity": "Arguing tide charts with anyone still awake.", "public_activity": "Late tally at the inn."}
   ],
@@ -80,6 +84,7 @@
     {"id": "loft-inn", "from_location_id": "net-loft", "to_location_id": "breakwater-inn", "minutes": 6},
     {"id": "inn-cottage", "from_location_id": "breakwater-inn", "to_location_id": "orin-cottage", "minutes": 12},
     {"id": "dispatch-northlight", "from_location_id": "harbor-dispatch", "to_location_id": "northlight", "minutes": 40},
-    {"id": "northlight-steps", "from_location_id": "northlight", "to_location_id": "widows-steps", "minutes": 15}
+    {"id": "northlight-steps", "from_location_id": "northlight", "to_location_id": "widows-steps", "minutes": 15},
+    {"id": "council-inn", "from_location_id": "council-rooms", "to_location_id": "breakwater-inn", "minutes": 8}
   ]
 }
