@@ -10,6 +10,7 @@
   const status = document.querySelector("#line-status");
   const count = document.querySelector("#count");
   const suggestions = document.querySelector("#suggested-questions");
+  const cluePicker = document.querySelector("#cited-clue");
   let isSubmitting = false;
   let pendingSubmission = null;
 
@@ -68,18 +69,20 @@
       pendingSubmission = { content, clientMessageId: crypto.randomUUID() };
     }
     const { clientMessageId } = pendingSubmission;
+    const citedClueId = cluePicker?.value || null;
     setSubmitting(true);
     status.textContent = "The signal is carrying your words…";
     try {
       const response = await fetch(`/api/v1/conversations/${id}/messages/stream`, {
         method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, client_message_id: clientMessageId })
+        body: JSON.stringify({ content, client_message_id: clientMessageId, cited_clue_id: citedClueId })
       });
       if (!response.ok) {
         const detail = (await response.json()).detail;
         status.textContent = detail || "The line went quiet. Your message was not committed; try again.";
         return;
       }
+      if (cluePicker) cluePicker.value = "";
       render({ role: "visitor", kind: "speech", content });
       let reply = null;
       const reader = response.body.getReader();

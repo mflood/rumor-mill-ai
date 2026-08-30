@@ -60,6 +60,7 @@ from rumor_mill.adapters.persistence.models import (
     OperatorAuditModel,
     RunModel,
     VisitorCharacterStateModel,
+    VisitorClueDiscoveryModel,
     VisitorModel,
     WorkerHeartbeatModel,
     WorldModel,
@@ -250,6 +251,7 @@ class ConversationMessage(ApiModel):
 class AddMessageRequest(ApiModel):
     content: str = Field(min_length=1, max_length=4_000)
     client_message_id: UUID = Field(default_factory=uuid4)
+    cited_clue_id: str | None = None
 
 
 class ConversationResponse(ApiModel):
@@ -849,6 +851,18 @@ def create_app(
             )
         )
         return frozenset(key.rsplit(":", 1)[-1] for key in keys if key.startswith(prefix))
+
+    def discovered_clue_ids(
+        database: Session, run: RunRecord, world: WorldDefinition
+    ) -> frozenset[str]:
+        """Return clue ids unlocked by a completed beat's `discovers_clue_ids`."""
+        completed_beats = completed_beat_ids(database, run)
+        return frozenset(
+            clue_id
+            for beat in world.beat_graph.beats
+            if beat.id in completed_beats
+            for clue_id in beat.discovers_clue_ids
+        )
 
     def dispatch_status_markup(database: Session, run: RunRecord, world: WorldDefinition) -> str:
         """Describe the next authoritative public story-work boundary.
@@ -2364,6 +2378,7 @@ def create_app(
         selected_location_id: str | None = None,
         expected_recommendation: str | None = None,
         expected_character_id: str | None = None,
+        token: str | None = None,
     ) -> str:
         simulation_time = run.simulation_time or run.started_at
         day = story_day(run)
@@ -2472,6 +2487,43 @@ def create_app(
                 location_action, stale=stale_recommendation
             )
             atmosphere = selected.presentation_copy or selected.description
+            clue_section = ""
+            visitor = optional_visitor(database, token)
+            if visitor is not None:
+                available_clue_ids = set(selected.clue_ids) & discovered_clue_ids(
+                    database, run, world
+                )
+                if available_clue_ids:
+                    already_carried = {
+                        row.clue_id
+                        for row in database.scalars(
+                            select(VisitorClueDiscoveryModel).where(
+                                VisitorClueDiscoveryModel.visitor_id == visitor.id,
+                                VisitorClueDiscoveryModel.run_id == run.id,
+                                VisitorClueDiscoveryModel.clue_id.in_(available_clue_ids),
+                            )
+                        )
+                    }
+                    newly_found = available_clue_ids - already_carried
+                    for clue_id in newly_found:
+                        database.add(
+                            VisitorClueDiscoveryModel(
+                                visitor_id=visitor.id, run_id=run.id, clue_id=clue_id
+                            )
+                        )
+                    if newly_found:
+                        database.commit()
+                    clue_by_id = {item.id: item for item in world.clues}
+                    clue_markup = "".join(
+                        f'<li data-meaningful-public-content="clue"><strong>{escape(clue_by_id[cid].name)}</strong><span>{escape(clue_by_id[cid].description)}</span></li>'
+                        for cid in sorted(available_clue_ids)
+                        if cid in clue_by_id
+                    )
+                    clue_section = (
+                        '<section class="location-clues" aria-labelledby="clues-title">'
+                        '<h2 id="clues-title">What you noticed here</h2>'
+                        f'<ul class="clue-list">{clue_markup}</ul></section>'
+                    )
             detail = f"""
               <article class="place-file" aria-labelledby="place-title">
                 <a class="back-link" href="/lighthouse/runs/{run.id}/town">← Return to the whole town</a>
@@ -2483,6 +2535,7 @@ def create_app(
                   <section aria-labelledby="events-title"><h2 id="events-title">Recent public events</h2><ul class="event-list">{event_markup}</ul></section>
                 </div>
                 <section id="public-content" class="location-panels" aria-labelledby="panels-title"><h2 id="panels-title">From the published story</h2>{panel_markup}</section>
+                {clue_section}
                 {next_action}
               </article>
             """
@@ -2551,6 +2604,7 @@ def create_app(
                 selected_location_id=location_id,
                 expected_recommendation=recommended,
                 expected_character_id=character,
+                token=token,
             )
         )
 
@@ -3049,6 +3103,8 @@ def create_app(
         model: ConversationModel,
         state_model: VisitorCharacterStateModel,
         database: Session,
+        *,
+        presented_clue_id: str | None = None,
     ) -> ConversationContext:
         run, world = load_run(model.run_id)
         character = next(item for item in world.cast if item.id == model.participant_ids[0])
@@ -3070,9 +3126,9 @@ def create_app(
             )
 
         completed_beats = completed_beat_ids(database, run)
+        discovered_clues = discovered_clue_ids(database, run, world)
         established_by_beat: dict[str, bool] = {}
         revealed_by_beat: dict[str, bool] = {}
-        discovered_by_beat: dict[str, bool] = {}
         clue_witness_ids: dict[str, set[str]] = {}
         for beat in world.beat_graph.beats:
             for truth_id in beat.establishes_truth_ids:
@@ -3084,9 +3140,6 @@ def create_app(
                     revealed_by_beat.get(secret_id, False) or beat.id in completed_beats
                 )
             for clue_id in beat.discovers_clue_ids:
-                discovered_by_beat[clue_id] = (
-                    discovered_by_beat.get(clue_id, False) or beat.id in completed_beats
-                )
                 clue_witness_ids.setdefault(clue_id, set()).update(beat.character_ids)
         location_by_clue = {
             clue_id: location.id for location in world.locations for clue_id in location.clue_ids
@@ -3103,7 +3156,7 @@ def create_app(
         known_clues = [
             item
             for item in world.clues
-            if discovered_by_beat.get(item.id, False)
+            if item.id in discovered_clues
             and (
                 character.id in clue_witness_ids.get(item.id, set())
                 or location_by_clue.get(item.id) == character.home_location_id
@@ -3141,14 +3194,29 @@ def create_app(
             )
             for item in state_model.memories[-12:]
         )
+        presented_item = next((item for item in world.clues if item.id == presented_clue_id), None)
+        presented_evidence = (
+            (
+                ConversationBelief(
+                    claim_id=ClaimId(uuid5(namespace, f"claim:clue:{presented_item.id}")),
+                    statement=f"{presented_item.name}: {presented_item.description}",
+                    confidence=1,
+                ),
+            )
+            if presented_item is not None
+            else ()
+        )
         trust_disclosure_threshold = 0.6
+        pressed_with_evidence = bool(presented_evidence) or (
+            float(state_model.trust) >= trust_disclosure_threshold
+        )
         secret_boundaries = tuple(
             DisclosureBoundary(
                 topic=item.id,
                 instruction=(
                     "You may admit this if the visitor presses you with specific, "
                     "well-reasoned questions; do not volunteer it unprompted."
-                    if float(state_model.trust) >= trust_disclosure_threshold
+                    if pressed_with_evidence
                     else "Do not disclose this protected claim in this conversation."
                 ),
                 protected_claim_ids=(ClaimId(uuid5(namespace, f"claim:{item.id}")),),
@@ -3185,6 +3253,7 @@ def create_app(
                     ),
                 ),
             ),
+            presented_evidence=presented_evidence,
             occurred_at=simulation_time,
         )
 
@@ -3216,6 +3285,18 @@ def create_app(
         )
         if state_model is None:  # pragma: no cover - protected by conversation creation
             raise HTTPException(status.HTTP_409_CONFLICT, "visitor relationship state is missing")
+        if request.cited_clue_id is not None:
+            carried = database.scalar(
+                select(VisitorClueDiscoveryModel).where(
+                    VisitorClueDiscoveryModel.visitor_id == visitor_id,
+                    VisitorClueDiscoveryModel.run_id == model.run_id,
+                    VisitorClueDiscoveryModel.clue_id == request.cited_clue_id,
+                )
+            )
+            if carried is None:
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND, "that clue is not among your discoveries"
+                )
         visitor_message = ConversationMessage(
             id=request.client_message_id,
             role="visitor",
@@ -3237,7 +3318,9 @@ def create_app(
             )
             generated = list(
                 conversation_engine.stream(
-                    character_context(model, state_model, database),
+                    character_context(
+                        model, state_model, database, presented_clue_id=request.cited_clue_id
+                    ),
                     request.content,
                     history=history,
                 )
@@ -3464,6 +3547,30 @@ def create_app(
         require_selected_story(visitor, model.run_id, run)
         character = next(item for item in world.cast if item.id == model.participant_ids[0])
         page = (web_root / "conversation.html").read_text(encoding="utf-8")
+        clue_by_id = {item.id: item for item in world.clues}
+        carried_clue_ids = [
+            row.clue_id
+            for row in database.scalars(
+                select(VisitorClueDiscoveryModel).where(
+                    VisitorClueDiscoveryModel.visitor_id == visitor.id,
+                    VisitorClueDiscoveryModel.run_id == run.id,
+                )
+            )
+            if row.clue_id in clue_by_id
+        ]
+        clue_picker = (
+            (
+                '<label for="cited-clue">Cite something you found</label>'
+                '<select id="cited-clue" name="cited_clue_id"><option value="">— nothing —</option>'
+                + "".join(
+                    f'<option value="{escape(cid)}">{escape(clue_by_id[cid].name)}</option>'
+                    for cid in carried_clue_ids
+                )
+                + "</select>"
+            )
+            if carried_clue_ids
+            else ""
+        )
         line_status = private_line_status(character)
         if run.status != RunStatus.RUNNING:
             line_status = "This season is no longer live. This private exchange is read-only."
@@ -3471,9 +3578,10 @@ def create_app(
                 '<div class="suggested-questions" id="suggested-questions" aria-label="Suggested questions">\n        <button type="button" data-suggested-question>What happened to Elias?</button>\n        <button type="button" data-suggested-question>Where were you last night?</button>\n        <button type="button" data-suggested-question>What do you know about Northlight?</button>\n      </div>\n      ',
                 "",
             ).replace(
-                '<form class="dispatch-console" id="composer" aria-busy="false">\n        <label for="message">What do you ask?</label>\n        <textarea id="message" maxlength="4000" required rows="3"></textarea>\n        <div><span id="count">0 / 4000</span><button type="submit">Send privately</button></div>\n      </form>',
+                '<form class="dispatch-console" id="composer" aria-busy="false">\n        <label for="message">What do you ask?</label>\n        <!-- CLUE_PICKER -->\n        <textarea id="message" maxlength="4000" required rows="3"></textarea>\n        <div><span id="count">0 / 4000</span><button type="submit">Send privately</button></div>\n      </form>',
                 '<p class="line-status" role="status"><strong>This season is read-only.</strong> You can review this private exchange, but cannot send new messages.</p>',
             )
+        page = page.replace("<!-- CLUE_PICKER -->", clue_picker)
         return HTMLResponse(
             page.replace("{{ conversation_id }}", str(model.id))
             .replace("{{ character_name }}", escape(character.name))

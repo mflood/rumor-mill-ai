@@ -31,6 +31,7 @@ from rumor_mill.adapters.persistence.models import (
     OperatorAuditModel,
     RunModel,
     VisitorCharacterStateModel,
+    VisitorClueDiscoveryModel,
     VisitorModel,
     WorkerHeartbeatModel,
     WorldModel,
@@ -2714,6 +2715,86 @@ def test_trust_persists_from_conversation_output_and_softens_a_high_trust_bounda
     high_trust = sent_text()
     assert "presses you with specific" in high_trust
     assert "Do not disclose this protected claim" not in high_trust
+
+
+def test_visitor_can_discover_carry_and_present_a_clue_as_evidence(api) -> None:  # type: ignore[no-untyped-def]
+    """Regression test for P0-4: the discover -> carry -> spend evidence loop.
+
+    tests/fixtures/worlds/minimal.json's `hidden-key` beat discovers the `market-ledger`
+    clue at the `archive` location (Bea's home). Once that beat completes, visiting the
+    location should record the clue against the visitor, the conversation page should
+    offer it as something to cite, and citing it should both reach the model and soften
+    Bea's otherwise-strict disclosure boundary for the still-unrevealed secret.
+    """
+    client, factory = api
+    provider = cast(MutableConversationProvider, client.app_state["conversation_provider"])
+    run_id = UUID(str(initialize(client)["id"]))
+
+    anonymous_visit = client.get(f"/lighthouse/runs/{run_id}/town/archive")
+    assert anonymous_visit.status_code == 200
+    assert "What you noticed here" not in anonymous_visit.text
+
+    start_visitor_session(client)
+
+    quiet_location = client.get(f"/lighthouse/runs/{run_id}/town/archive")
+    assert "What you noticed here" not in quiet_location.text
+    with factory() as database:
+        assert database.scalar(select(func.count()).select_from(VisitorClueDiscoveryModel)) == 0
+
+    now = datetime.now(UTC)
+    with factory() as database:
+        database.add(
+            JobModel(
+                run_id=run_id,
+                idempotency_key=f"run:{run_id}:beat:hidden-key",
+                kind="lighthouse_story",
+                status="completed",
+                scheduled_at=now,
+                available_at=now,
+                completed_at=now,
+                payload={"story_kind": "beat", "id": "hidden-key"},
+            )
+        )
+        database.commit()
+
+    found = client.get(f"/lighthouse/runs/{run_id}/town/archive")
+    assert "What you noticed here" in found.text
+    assert "Market ledger" in found.text
+    with factory() as database:
+        discovery = database.scalar(select(VisitorClueDiscoveryModel))
+        assert discovery is not None
+        assert discovery.clue_id == "market-ledger"
+
+    # Revisiting is idempotent: no duplicate row for an already-carried clue.
+    revisited = client.get(f"/lighthouse/runs/{run_id}/town/archive")
+    assert "Market ledger" in revisited.text
+    with factory() as database:
+        assert database.scalar(select(func.count()).select_from(VisitorClueDiscoveryModel)) == 1
+
+    conversation = client.post(
+        f"/api/v1/runs/{run_id}/conversations", json={"character_id": "bea"}
+    ).json()
+    page = client.get(f"/lighthouse/conversations/{conversation['id']}")
+    assert '<select id="cited-clue" name="cited_clue_id">' in page.text
+    assert '<option value="market-ledger">Market ledger</option>' in page.text
+
+    rejected = client.post(
+        f"/api/v1/conversations/{conversation['id']}/messages",
+        json={"content": "Explain this.", "cited_clue_id": "no-such-clue"},
+    )
+    assert rejected.status_code == 404
+
+    presented = client.post(
+        f"/api/v1/conversations/{conversation['id']}/messages",
+        json={"content": "I found this ledger. Explain it.", "cited_clue_id": "market-ledger"},
+    )
+    assert presented.status_code == 200
+    assert provider.last_request is not None
+    sent = "\n".join(item.content for item in provider.last_request.messages)
+    assert "A ledger recording deliveries to the archive." in sent
+    assert "presented_evidence" in sent
+    assert "presses you with specific" in sent
+    assert "Do not disclose this protected claim" not in sent
 
 
 @pytest.mark.parametrize(
