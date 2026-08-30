@@ -276,6 +276,33 @@ def test_lighthouse_help_does_not_mutate_an_active_visit(api) -> None:  # type: 
     assert after == before
 
 
+def test_lighthouse_landing_hero_tracks_the_live_day_and_issue_number(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+
+    day_one = client.get("/lighthouse")
+    assert "Greyhaven, Day 1<" in day_one.text
+    assert "<span>Day 1</span>" in day_one.text
+    assert "Issue 01" in day_one.text
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.simulation_time = run.started_at + timedelta(days=2)
+        database.add(public_recap(run_id, run.started_at, "The first dispatch"))
+        database.add(
+            public_recap(run_id, run.started_at + timedelta(days=1), "The second dispatch")
+        )
+        database.commit()
+
+    later = client.get("/lighthouse")
+    assert "Greyhaven, Day 3<" in later.text
+    assert "<span>Day 3</span>" in later.text
+    assert "Issue 02" in later.text
+    assert "Day one" not in later.text
+    assert "Issue 01" not in later.text
+
+
 def test_lighthouse_historical_archive_and_people_are_safe_and_read_only(api) -> None:  # type: ignore[no-untyped-def]
     client, factory = api
     run_id = UUID(str(initialize(client)["id"]))
@@ -317,6 +344,7 @@ def test_lighthouse_historical_archive_and_people_are_safe_and_read_only(api) ->
     assert "Season contact closed" in chooser.text
     assert "This season is read-only" in conversation_page.text
     assert 'id="composer"' not in conversation_page.text
+    assert "suggested-questions" not in conversation_page.text
     rejected = client.post(
         f"/api/v1/conversations/{conversation.json()['id']}/messages",
         json={"content": "Can you still hear me?", "client_message_id": str(uuid4())},
@@ -366,7 +394,9 @@ def test_lighthouse_archive_handles_no_history_multiple_seasons_and_bad_ids(api)
     assert "Choose a season" in archive.text
     assert "An earlier season" not in archive.text
     assert archive.text.count("Season beginning") == 2
-    assert client.get("/lighthouse/runs/not-a-season/archive").status_code == 404
+    malformed_run = client.get("/lighthouse/runs/not-a-season/archive")
+    assert malformed_run.status_code == 404
+    assert "This page" in malformed_run.text and "doesn't exist" in malformed_run.text
     assert (
         client.get(f"/lighthouse/runs/{second_id}/archive?through=not-an-episode").status_code
         == 422
@@ -919,6 +949,7 @@ def test_character_profiles_are_visitor_scoped_and_spoiler_safe(api) -> None:  #
     assert (
         "Seen in a published public story update. You have not spoken privately yet." in ledger.text
     )
+    assert "can be messaged privately, even when they are away" in ledger.text
     profile = client.get(f"/lighthouse/runs/{run_id}/people/ada")
     assert profile.status_code == 200
     assert "Short observations followed by a careful question" in profile.text
@@ -1069,7 +1100,7 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
     first = client.get(f"/lighthouse/runs/{run_id}/archive/{first_id}")
     assert first.status_code == 200
     assert first.text.count('href="/lighthouse/help">How to play</a>') == 1
-    assert "Story panels" in first.text
+    assert "Story dispatches" in first.text
     assert "Empty lanterns" in first.text
     assert "Beginning of the season" in first.text
     assert f'href="/lighthouse/runs/{run_id}/archive/{second_id}"' in first.text
@@ -1077,7 +1108,10 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
     second = client.get(f"/lighthouse/runs/{run_id}/archive/{second_id}")
     assert "You are caught up" in second.text
     assert f'href="/lighthouse/runs/{run_id}/archive/{first_id}"' in second.text
-    assert client.get(f"/lighthouse/runs/{run_id}/archive/{uuid4()}").status_code == 404
+    missing_episode = client.get(f"/lighthouse/runs/{run_id}/archive/{uuid4()}")
+    assert missing_episode.status_code == 404
+    assert "This page" in missing_episode.text and "doesn't exist" in missing_episode.text
+    assert missing_episode.headers["content-type"].startswith("text/html")
 
     empty_run = UUID(str(initialize(client)["id"]))
     empty = client.get(f"/lighthouse/runs/{empty_run}/archive")
@@ -1315,7 +1349,7 @@ def test_players_report_messages_panels_and_episodes_with_safe_references(api) -
 
     episode_page = client.get(f"/lighthouse/runs/{run_id}/archive/{artifact_id}")
     assert "Flag this episode" in episode_page.text
-    assert "Flag this panel" in episode_page.text
+    assert "Flag this dispatch" in episode_page.text
 
 
 def test_reports_reject_missing_foreign_or_private_targets(api) -> None:  # type: ignore[no-untyped-def]
@@ -1413,7 +1447,9 @@ def test_authentication_validation_and_not_found_errors(api) -> None:  # type: i
     assert mismatch.status_code == 422
 
     missing_id = uuid4()
-    assert client.get(f"/api/v1/runs/{missing_id}").status_code == 404
+    api_not_found = client.get(f"/api/v1/runs/{missing_id}")
+    assert api_not_found.status_code == 404
+    assert api_not_found.json() == {"detail": "run not found"}
     assert (
         client.post(
             f"/api/v1/runs/{missing_id}/ticks",
@@ -1513,7 +1549,7 @@ def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type:
     assert "Character relationship notes, trust, and memories" in today.text
     assert "anonymous visitor record and this browser's identifier" in today.text
     assert "cannot be recovered" in today.text
-    assert "shared public episodes, scenes, and town events remain unchanged" in today.text
+    assert "shared public episodes, dispatches, and town events remain unchanged" in today.text
 
     server_visitor = client.get("/api/v1/visitors/me").json()
     server_visitor_id = UUID(str(server_visitor["visitor_id"]))
@@ -1638,7 +1674,7 @@ def test_today_presents_one_accessible_current_story_state(api) -> None:  # type
     quiet = client.get("/lighthouse/today")
     assert quiet.text.count('role="status"') == 1
     assert quiet.text.count("Active now") == 1
-    assert "No new public scenes" in quiet.text
+    assert "No new public dispatches" in quiet.text
     assert "Today’s story update could not be prepared" not in quiet.text
     assert "Since your last visit" not in quiet.text
     assert "How updates work" in quiet.text
@@ -1679,9 +1715,9 @@ def test_today_presents_one_accessible_current_story_state(api) -> None:  # type
 
     scenes = client.get("/lighthouse/today")
     assert scenes.text.count('role="status"') == 1
-    assert "New public scenes" in scenes.text
-    assert "Read today’s scenes" in scenes.text
-    assert "No new public scenes" not in scenes.text
+    assert "New public dispatches" in scenes.text
+    assert "Read today’s dispatches" in scenes.text
+    assert "No new public dispatches" not in scenes.text
     assert "Since your last visit" not in scenes.text
 
     with factory() as database:
@@ -1693,9 +1729,9 @@ def test_today_presents_one_accessible_current_story_state(api) -> None:  # type
     returned = client.get("/lighthouse/today")
     assert returned.text.count('role="status"') == 1
     assert "Since your last visit" in returned.text
-    assert "1 new public scene has been published" in returned.text
-    assert "Read the new scenes" in returned.text
-    assert "No new public scenes" not in returned.text
+    assert "1 new public dispatch has been published" in returned.text
+    assert "Read the new dispatches" in returned.text
+    assert "No new public dispatches" not in returned.text
 
     with factory() as database:
         database.add(
@@ -1719,7 +1755,7 @@ def test_today_presents_one_accessible_current_story_state(api) -> None:  # type
     assert "Today’s story update could not be prepared" in failed.text
     assert "Read the previous story update" in failed.text
     assert "Your progress and private conversations are safe" in failed.text
-    assert "No new public scenes" not in failed.text
+    assert "No new public dispatches" not in failed.text
     assert "Since your last visit" not in failed.text
 
 
@@ -1781,6 +1817,11 @@ def test_today_and_archive_share_one_published_recap_contract(api) -> None:  # t
     assert 'data-panel-count="1"' in one_archive.text
     assert "First persisted dispatch" in one_today.text
     assert "First persisted dispatch" in one_archive.text
+    # Each panel card on Today deep-links to its own dispatch on the episode page.
+    dispatch_href = f"/lighthouse/runs/{run_id}/archive/{first_id}#dispatch-{first_source}"
+    assert f'href="{dispatch_href}"' in one_today.text
+    episode_page = client.get(f"/lighthouse/runs/{run_id}/archive/{first_id}")
+    assert f'id="dispatch-{first_source}"' in episode_page.text
 
     with factory() as database:
         run = database.get(RunModel, run_id)
@@ -2599,6 +2640,8 @@ def test_character_picker_and_conversation_page_are_server_rendered(api) -> None
     assert "A private word with" in page.text
     assert "This is a live private exchange" in page.text
     assert "signal-wire" in page.text
+    assert 'id="suggested-questions"' in page.text
+    assert "What happened to Elias?" in page.text
     script = client.get("/static/conversation.js")
     assert "ReadableStream" not in script.text  # uses the widely supported reader API directly
     assert "getReader()" in script.text
