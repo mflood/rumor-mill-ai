@@ -87,7 +87,7 @@ from rumor_mill.engine.conversation import (
     VisitorRelationship,
 )
 from rumor_mill.engine.domain import CharacterId, ClaimId, LocationId, MemoryId, Visibility
-from rumor_mill.engine.lighthouse_pipeline import LIGHTHOUSE_STORY_JOB
+from rumor_mill.engine.lighthouse_pipeline import LIGHTHOUSE_STORY_JOB, _stable_id
 from rumor_mill.engine.ports import (
     ClockMode,
     ProviderError,
@@ -2120,6 +2120,10 @@ def create_app(
     def public_location_events(
         database: Session, run_id: UUID, location_id: str, *, limit: int = 3
     ) -> list[EventModel]:
+        # Event.location_id is stored as the derived per-run domain id (see
+        # LighthouseStoryHandler._stable_id), not the authored world.json slug — scope
+        # the comparison the same way the event was created, or it never matches.
+        scoped_location_id = str(_stable_id(run_id, "location", location_id))
         candidates = database.scalars(
             select(EventModel)
             .where(EventModel.run_id == run_id)
@@ -2129,7 +2133,7 @@ def create_app(
             item
             for item in candidates
             if item.payload.get("visibility", "public") == "public"
-            and item.payload.get("location_id") == location_id
+            and item.payload.get("location_id") == scoped_location_id
         ][:limit]
 
     def public_location_panels(
