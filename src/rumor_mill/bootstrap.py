@@ -25,6 +25,7 @@ class BootstrapResult:
     run_id: UUID
     created_world: bool
     created_run: bool
+    definition_updated: bool
 
 
 def bootstrap_lighthouse(database_url: str, world_path: Path = LIGHTHOUSE_PATH) -> BootstrapResult:
@@ -48,9 +49,16 @@ def _bootstrap_session(database: Session, definition: dict[str, object]) -> Boot
     slug = "lighthouse"
     world = database.scalar(select(WorldModel).where(WorldModel.slug == slug).with_for_update())
     created_world = world is None
+    definition_updated = False
     if world is None:
         world = WorldModel(id=uuid4(), slug=slug, schema_version=1, definition=definition)
         database.add(world)
+        database.flush()
+    elif world.definition != definition:
+        # Keep the stored world in sync with the packaged, continuity-validated JSON on every
+        # deploy. Beats and routines are read fresh each tick, so this can apply mid-season.
+        world.definition = definition
+        definition_updated = True
         database.flush()
 
     run = database.scalar(
@@ -88,7 +96,7 @@ def _bootstrap_session(database: Session, definition: dict[str, object]) -> Boot
     if opening_exists is None:
         database.add(opening_recap_artifact(run.id, run.started_at))
         database.flush()
-    return BootstrapResult(world.id, run.id, created_world, created_run)
+    return BootstrapResult(world.id, run.id, created_world, created_run, definition_updated)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -104,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
                 "run_id": str(result.run_id),
                 "created_world": result.created_world,
                 "created_run": result.created_run,
+                "definition_updated": result.definition_updated,
             }
         )
     )

@@ -69,6 +69,7 @@ def test_repeat_bootstrap_selects_live_season_without_changing_state(tmp_path: P
 
     assert second.run_id == first.run_id
     assert second.created_world is False and second.created_run is False
+    assert first.definition_updated is False and second.definition_updated is False
     with Session(create_engine(url)) as database:
         assert database.scalar(select(func.count()).select_from(VisitorModel)) == 1
         assert database.scalar(select(func.count()).select_from(RunModel)) == 1
@@ -80,6 +81,36 @@ def test_repeat_bootstrap_selects_live_season_without_changing_state(tmp_path: P
             )
             == 1
         )
+
+
+def test_repeat_bootstrap_syncs_a_stale_stored_world_definition(tmp_path: Path) -> None:
+    """Regression test: a redeploy must sync authored content changes into an existing world.
+
+    Without this, a fix to docs/worlds/lighthouse/world.json (e.g. a routine-coverage fix)
+    has zero effect in production once the world has been seeded once, since bootstrap only
+    ever created a WorldModel row and never touched an existing one's definition.
+    """
+    url = prepared_database(tmp_path)
+    first = bootstrap_lighthouse(url)
+    assert first.definition_updated is False
+
+    with Session(create_engine(url)) as database:
+        world = database.get(WorldModel, first.world_id)
+        assert world is not None
+        stale = dict(world.definition)
+        stale["routines"] = []  # simulate an older, pre-fix authored definition
+        world.definition = stale
+        database.commit()
+
+    second = bootstrap_lighthouse(url)
+
+    assert second.definition_updated is True
+    assert second.world_id == first.world_id
+    assert second.run_id == first.run_id
+    with Session(create_engine(url)) as database:
+        world = database.get(WorldModel, first.world_id)
+        assert world is not None
+        assert world.definition["routines"]
 
 
 def test_repeat_bootstrap_tolerates_an_opening_recap_with_a_drifted_id(tmp_path: Path) -> None:
