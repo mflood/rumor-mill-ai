@@ -144,6 +144,16 @@ def response(title: str = "The Key at Dusk") -> dict[str, Any]:
     }
 
 
+def test_generation_prompt_forbids_attributing_witness_claims_to_non_participants() -> None:
+    """Regression test for P0-5: the prompt must guard against the recap-generator
+    hallucination where a published dispatch named a character as a witness to
+    something they hold no claim about and later deny in conversation."""
+    request = SceneGenerationService._request(plan())
+    system_prompt = request.messages[0].content
+    assert "only attribute a specific observation, testimony, or witness account" in system_prompt
+    assert "unattributed phrasing" in system_prompt
+
+
 def test_planner_selects_cast_location_and_relevant_context() -> None:
     intent = PlotIntent(
         run_id=uid(2),
