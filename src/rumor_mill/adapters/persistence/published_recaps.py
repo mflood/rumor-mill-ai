@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from rumor_mill.adapters.persistence.models import ArtifactModel
-from rumor_mill.engine.recap import DailyRecap, RecapPanel
+from rumor_mill.engine.recap import DailyRecap, RecapPanel, RecapThread
 
 
 class PublishedRecapView(BaseModel):
@@ -23,7 +23,7 @@ class PublishedRecapView(BaseModel):
     headline: str
     dek: str
     panels: tuple[RecapPanel, ...]
-    active_threads: tuple[str, ...]
+    active_threads: tuple[RecapThread, ...]
     suggested_location_ids: tuple[str, ...]
     suggested_character_ids: tuple[str, ...]
     state: str
