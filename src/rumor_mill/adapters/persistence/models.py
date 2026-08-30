@@ -242,6 +242,25 @@ class VisitorCharacterStateModel(IdMixin, CreatedMixin, Base):
     )
 
 
+class VisitorClueDiscoveryModel(IdMixin, CreatedMixin, Base):
+    """A clue this visitor has personally noticed, carried forward for use as evidence."""
+
+    __tablename__ = "visitor_clue_discoveries"
+
+    visitor_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("visitors.id", ondelete="CASCADE"), nullable=False
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
+    clue_id: Mapped[str] = mapped_column(String(80), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("visitor_id", "run_id", "clue_id"),
+        Index("ix_visitor_clue_discovery_lookup", "visitor_id", "run_id"),
+    )
+
+
 class ConversationModel(IdMixin, CreatedMixin, Base):
     __tablename__ = "conversations"
 

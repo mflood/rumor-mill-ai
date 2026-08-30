@@ -46,6 +46,7 @@ TABLES = {
     "conversations",
     "visitors",
     "visitor_character_states",
+    "visitor_clue_discoveries",
     "jobs",
     "artifacts",
     "narrative_reports",
