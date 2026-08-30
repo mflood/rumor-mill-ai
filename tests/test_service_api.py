@@ -393,7 +393,9 @@ def test_lighthouse_archive_handles_no_history_multiple_seasons_and_bad_ids(api)
     assert "Choose a season" in archive.text
     assert "An earlier season" not in archive.text
     assert archive.text.count("Season beginning") == 2
-    assert client.get("/lighthouse/runs/not-a-season/archive").status_code == 404
+    malformed_run = client.get("/lighthouse/runs/not-a-season/archive")
+    assert malformed_run.status_code == 404
+    assert "This page" in malformed_run.text and "doesn't exist" in malformed_run.text
     assert (
         client.get(f"/lighthouse/runs/{second_id}/archive?through=not-an-episode").status_code
         == 422
@@ -1097,7 +1099,7 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
     first = client.get(f"/lighthouse/runs/{run_id}/archive/{first_id}")
     assert first.status_code == 200
     assert first.text.count('href="/lighthouse/help">How to play</a>') == 1
-    assert "Story panels" in first.text
+    assert "Story dispatches" in first.text
     assert "Empty lanterns" in first.text
     assert "Beginning of the season" in first.text
     assert f'href="/lighthouse/runs/{run_id}/archive/{second_id}"' in first.text
@@ -1105,7 +1107,10 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
     second = client.get(f"/lighthouse/runs/{run_id}/archive/{second_id}")
     assert "You are caught up" in second.text
     assert f'href="/lighthouse/runs/{run_id}/archive/{first_id}"' in second.text
-    assert client.get(f"/lighthouse/runs/{run_id}/archive/{uuid4()}").status_code == 404
+    missing_episode = client.get(f"/lighthouse/runs/{run_id}/archive/{uuid4()}")
+    assert missing_episode.status_code == 404
+    assert "This page" in missing_episode.text and "doesn't exist" in missing_episode.text
+    assert missing_episode.headers["content-type"].startswith("text/html")
 
     empty_run = UUID(str(initialize(client)["id"]))
     empty = client.get(f"/lighthouse/runs/{empty_run}/archive")
@@ -1441,7 +1446,9 @@ def test_authentication_validation_and_not_found_errors(api) -> None:  # type: i
     assert mismatch.status_code == 422
 
     missing_id = uuid4()
-    assert client.get(f"/api/v1/runs/{missing_id}").status_code == 404
+    api_not_found = client.get(f"/api/v1/runs/{missing_id}")
+    assert api_not_found.status_code == 404
+    assert api_not_found.json() == {"detail": "run not found"}
     assert (
         client.post(
             f"/api/v1/runs/{missing_id}/ticks",

@@ -17,6 +17,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import http_exception_handler as default_http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     HTMLResponse,
@@ -31,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from rumor_mill.adapters.persistence import (
     SqlAlchemyUnitOfWork,
@@ -442,6 +444,20 @@ def create_app(
         correlation_id.reset(token)
         return response
 
+    def not_found_page() -> HTMLResponse:
+        return HTMLResponse(
+            (web_root / "not_found.html").read_text(encoding="utf-8"),
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def lighthouse_not_found(request: Request, exc: StarletteHTTPException) -> Response:
+        if exc.status_code == status.HTTP_404_NOT_FOUND and request.url.path.startswith(
+            "/lighthouse"
+        ):
+            return not_found_page()
+        return await default_http_exception_handler(request, exc)
+
     @app.exception_handler(RequestValidationError)
     async def lighthouse_validation_error(
         request: Request, error: RequestValidationError
@@ -449,7 +465,7 @@ def create_app(
         if request.url.path.startswith("/lighthouse/runs/") and any(
             item.get("loc", ())[:2] == ("path", "run_id") for item in error.errors()
         ):
-            return PlainTextResponse("season not found", status_code=status.HTTP_404_NOT_FOUND)
+            return not_found_page()
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content=jsonable_encoder({"detail": error.errors()}),
@@ -2803,7 +2819,7 @@ def create_app(
             if index + 1 < len(recaps)
             else "<span>You are caught up</span>"
         )
-        content = f"""<article class="episode-page" data-meaningful-public-content="dispatch" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={recap.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{recap.published_at.isoformat()}">Published {recap.published_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={recap.id}&amp;artifact_id={recap.id}">Flag this episode</a></header><section class="archive-panels" aria-label="Story panels">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
+        content = f"""<article class="episode-page" data-meaningful-public-content="dispatch" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={recap.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{recap.published_at.isoformat()}">Published {recap.published_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={recap.id}&amp;artifact_id={recap.id}">Flag this episode</a></header><section class="archive-panels" aria-label="Story dispatches">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
         selected = selected_story(database, token)
         return HTMLResponse(
             archive_shell(
