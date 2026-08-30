@@ -42,6 +42,7 @@ class PresentationArtifact(ContractModel):
     provenance: Provenance
     visibility: Visibility = Visibility.PUBLIC
     lifecycle: Lifecycle
+    location_id: str | None = None
 
     @model_validator(mode="after")
     def validate_sources(self) -> Self:

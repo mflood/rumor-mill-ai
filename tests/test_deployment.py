@@ -332,6 +332,9 @@ def test_production_shaped_bootstrap_advances_executes_and_publishes_once(tmp_pa
         assert {artifact.kind for artifact in artifacts} == {"daily_recap", "story_card"}
         story_card = next(artifact for artifact in artifacts if artifact.kind == "story_card")
         assert story_card.title == "Dark Headland"
+        # The town/location pages match panels to a location by this authored id
+        # (e.g. "harbor-dispatch"), not the derived per-run location UUID.
+        assert story_card.payload["location_id"] == "harbor-dispatch"
         assert heartbeat is not None and heartbeat.story_pipeline_ready
         assert heartbeat.last_clock_advanced_at is not None
         assert heartbeat.last_story_job_enqueued_at is not None

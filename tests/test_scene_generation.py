@@ -78,6 +78,7 @@ def plan(run_id: UUID = DEFAULT_RUN_ID) -> ScenePlan:
         scheduled_at=NOW,
         participant_ids=(character(10), character(11)),
         location_id=location(20),
+        authored_location_id="northlight",
         goals=("Reveal the missing key",),
         constraints=("Do not reveal the culprit",),
         relevant_context=(ContextItem(content="A storm is approaching", salience=0.9),),
@@ -262,6 +263,7 @@ def test_generation_commits_and_round_trips_every_consequence(
     assert len(first.claims) == 1
     assert len(first.memories) == 2
     assert first.artifacts[0].kind is ArtifactKind.STORY_CARD
+    assert first.artifacts[0].location_id == "northlight"
     assert first.generation["provider"] == "fake"
     assert first.generation["request_id"] == "fake:off_screen_scene"
     assert first.generation["output"]["relationship_changes"][0]["trust_delta"] == 0.1
