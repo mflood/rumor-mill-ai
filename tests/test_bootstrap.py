@@ -122,6 +122,37 @@ def test_repeat_bootstrap_syncs_a_stale_stored_world_definition(tmp_path: Path) 
         assert world.definition["routines"]
 
 
+def test_repeat_bootstrap_syncs_a_stale_opening_recap(tmp_path: Path) -> None:
+    """Regression test: a redeploy must sync authored opening-recap changes too.
+
+    Without this, a content fix to lighthouse_opening.py (e.g. #97's fix removing an
+    unsupported witness attribution) has zero effect on an already-bootstrapped run's
+    already-published day-1 dispatch, since bootstrap only ever created the opening
+    recap artifact once and never touched an existing one's content.
+    """
+    url = prepared_database(tmp_path)
+    first = bootstrap_lighthouse(url)
+    assert first.opening_recap_updated is False
+
+    with Session(create_engine(url)) as database:
+        artifact = database.get(ArtifactModel, opening_recap_id(first.run_id))
+        assert artifact is not None
+        stale_payload = dict(artifact.payload)
+        stale_payload["recap"] = {**stale_payload["recap"], "headline": "An older headline."}
+        artifact.title = "An older headline."
+        artifact.payload = stale_payload
+        database.commit()
+
+    second = bootstrap_lighthouse(url)
+
+    assert second.opening_recap_updated is True
+    assert second.run_id == first.run_id
+    with Session(create_engine(url)) as database:
+        artifact = database.get(ArtifactModel, opening_recap_id(first.run_id))
+        assert artifact is not None
+        assert artifact.title == "Northlight goes dark."
+
+
 def test_repeat_bootstrap_tolerates_an_opening_recap_with_a_drifted_id(tmp_path: Path) -> None:
     """Regression test: recognize an existing opening recap by its natural key.
 

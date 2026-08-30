@@ -26,6 +26,7 @@ class BootstrapResult:
     created_world: bool
     created_run: bool
     definition_updated: bool
+    opening_recap_updated: bool
 
 
 def bootstrap_lighthouse(database_url: str, world_path: Path = LIGHTHOUSE_PATH) -> BootstrapResult:
@@ -86,17 +87,28 @@ def _bootstrap_session(database: Session, definition: dict[str, object]) -> Boot
         )
         database.add(run)
         database.flush()
-    opening_exists = database.scalar(
-        select(ArtifactModel.id).where(
+    opening = database.scalar(
+        select(ArtifactModel).where(
             ArtifactModel.run_id == run.id,
             ArtifactModel.kind == "daily_recap",
             ArtifactModel.story_date == run.started_at.date(),
         )
     )
-    if opening_exists is None:
-        database.add(opening_recap_artifact(run.id, run.started_at))
+    fresh_opening = opening_recap_artifact(run.id, run.started_at)
+    opening_updated = False
+    if opening is None:
+        database.add(fresh_opening)
         database.flush()
-    return BootstrapResult(world.id, run.id, created_world, created_run, definition_updated)
+    elif opening.payload != fresh_opening.payload:
+        opening.title = fresh_opening.title
+        opening.body = fresh_opening.body
+        opening.source_ids = fresh_opening.source_ids
+        opening.payload = fresh_opening.payload
+        opening_updated = True
+        database.flush()
+    return BootstrapResult(
+        world.id, run.id, created_world, created_run, definition_updated, opening_updated
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -113,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
                 "created_world": result.created_world,
                 "created_run": result.created_run,
                 "definition_updated": result.definition_updated,
+                "opening_recap_updated": result.opening_recap_updated,
             }
         )
     )
