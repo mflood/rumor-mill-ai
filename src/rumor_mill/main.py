@@ -940,7 +940,7 @@ def create_app(
         elif recap is not None and recap.state == "quiet_day":
             title = "Quiet-day story update"
             body = (
-                "Greyhaven published a quiet-day dispatch with no public scenes. Your progress "
+                "Greyhaven published a quiet-day dispatch with no public dispatches. Your progress "
                 "and private conversations are safe, and the dispatch remains in Archive."
             )
             action = "Read the quiet-day dispatch"
@@ -949,25 +949,25 @@ def create_app(
             title = "Since your last visit"
             body = (
                 f"{len(recap.panels)} new public "
-                f"{'scene has' if len(recap.panels) == 1 else 'scenes have'} been published. "
+                f"{'dispatch has' if len(recap.panels) == 1 else 'dispatches have'} been published. "
                 "Your saved progress and private conversations are safe. Start with the newest "
                 "published story update below."
             )
-            action = "Read the new scenes"
+            action = "Read the new dispatches"
             href = "#recap-heading"
         elif recap is not None and recap.panels:
-            title = "New public scenes"
+            title = "New public dispatches"
             body = (
                 f"Today’s published story update contains {len(recap.panels)} public "
-                f"{'scene' if len(recap.panels) == 1 else 'scenes'}. Your saved progress and "
+                f"{'dispatch' if len(recap.panels) == 1 else 'dispatches'}. Your saved progress and "
                 "private conversations are safe. Read the story update, then follow a thread."
             )
-            action = "Read today’s scenes"
+            action = "Read today’s dispatches"
             href = "#recap-heading"
         else:
-            title = "No new public scenes"
+            title = "No new public dispatches"
             body = (
-                "Greyhaven has not published a new public scene yet. Your progress and private "
+                "Greyhaven has not published a new public dispatch yet. Your progress and private "
                 "conversations are safe. Revisit the last known places or return later."
             )
             action = "Explore the town"
@@ -991,11 +991,11 @@ def create_app(
                 "<!-- DISPATCH_RETURN_NOTE -->": '<p class="return-note"><span aria-hidden="true">↳</span> No episode has been published yet. Explore the live town while Greyhaven prepares its first dispatch.</p>',
                 "<!-- DISPATCH_HEADLINE -->": "<h1>Greyhaven waits.</h1>",
                 "<!-- DISPATCH_DEK -->": '<p class="premise">There is no published story update to read yet.</p>',
-                "<!-- DISPATCH_READING_TIME -->": '<p class="reading-time">0 public scenes <span aria-hidden="true">·</span> No reading time yet</p>',
+                "<!-- DISPATCH_READING_TIME -->": '<p class="reading-time">0 public dispatches <span aria-hidden="true">·</span> No reading time yet</p>',
             }
         dispatch_day = max(1, min(14, (recap.story_date - run.started_at.date()).days + 1))
         panel_count = len(recap.panels)
-        scene_label = "scene" if panel_count == 1 else "scenes"
+        dispatch_label = "dispatch" if panel_count == 1 else "dispatches"
         timing = "Quiet-day dispatch" if panel_count == 0 else "About one minute"
         return {
             "<!-- DISPATCH_EYEBROW -->": (
@@ -1011,7 +1011,7 @@ def create_app(
             "<!-- DISPATCH_DEK -->": f'<p class="premise">{escape(recap.dek)}</p>',
             "<!-- DISPATCH_READING_TIME -->": (
                 f'<p class="reading-time" data-panel-count="{panel_count}">{panel_count} public '
-                f'{scene_label} <span aria-hidden="true">·</span> {timing}</p>'
+                f'{dispatch_label} <span aria-hidden="true">·</span> {timing}</p>'
             ),
         }
 
@@ -1223,10 +1223,15 @@ def create_app(
         template = "lighthouse.html" if story_available else "lighthouse_unavailable.html"
         document = (web_root / template).read_text(encoding="utf-8")
         if run is not None:
+            day = run_story_day(run)
+            issue_number = max(1, len(published_recaps(database, run.id)))
             document = document.replace(
                 'Day 1 <span aria-hidden="true">·</span> <span>Night</span>',
                 escape(live_clock_label(run)),
             )
+            document = document.replace("Greyhaven, Day One", f"Greyhaven, Day {day}")
+            document = document.replace("<span>Day one</span>", f"<span>Day {day}</span>")
+            document = document.replace("Issue 01", f"Issue {issue_number:02}")
             document = document.replace("<!-- PRIMARY_NAVIGATION -->", lighthouse_navigation(run))
         else:
             has_history = bool(published_archive_runs(database))
@@ -2227,17 +2232,18 @@ def create_app(
         if recap is None:
             panels = """<article class="recap-panel"><p class="panel-index">Published story update</p><h3>No episode has been published yet</h3><p>Greyhaven may still have live public activity. The recommendation alongside this briefing uses the current town state.</p></article>"""
             return panels, "<li><span>—</span> No published threads yet.</li>"
-        href = f"/lighthouse/runs/{run.id}/archive/{recap.id}"
+        base_href = f"/lighthouse/runs/{run.id}/archive/{recap.id}"
         panels = "".join(
             '<article class="recap-panel" data-meaningful-public-content="dispatch">'
-            f'<p class="panel-index">Published scene {index}</p>'
+            f'<p class="panel-index">Published dispatch {index}</p>'
             f"<h3>{escape(panel.title)}</h3><p>{escape(panel.body)}</p>"
-            f'<a data-playable-action="read" href="{href}">Read the published episode <span aria-hidden="true">→</span></a></article>'
+            f'<a data-playable-action="read" href="{base_href}#dispatch-{panel.source_id}">'
+            'Read the published episode <span aria-hidden="true">→</span></a></article>'
             for index, panel in enumerate(recap.panels, 1)
         ) or (
             '<article class="recap-panel"><p class="panel-index">Quiet story update</p>'
             f"<h3>{escape(recap.headline)}</h3><p>{escape(recap.dek)}</p>"
-            f'<a data-playable-action="read" href="{href}">Read the published episode <span aria-hidden="true">→</span></a></article>'
+            f'<a data-playable-action="read" href="{base_href}">Read the published episode <span aria-hidden="true">→</span></a></article>'
         )
         threads = (
             "".join(
@@ -2316,7 +2322,7 @@ def create_app(
             )
             panel_markup = (
                 persisted_panel_markup + recap_panel_markup
-                or '<p class="quiet-note">No story panel points here yet. The archive will update after publication.</p>'
+                or '<p class="quiet-note">No story dispatch points here yet. The archive will update after publication.</p>'
             )
             if people:
                 person = people[0]
@@ -2353,7 +2359,7 @@ def create_app(
                 and expected_character_id not in {item.character_id for item in people}
             ) or (expected_recommendation == "observe" and not (events or panels or recap_panels))
             quiet_explanation = (
-                '<p class="state-banner" role="status"><strong>This location is quiet right now.</strong> No resident, public event, or published panel is available here. The action below is the best truthful alternative.</p>'
+                '<p class="state-banner" role="status"><strong>This location is quiet right now.</strong> No resident, public event, or published dispatch is available here. The action below is the best truthful alternative.</p>'
                 if not people
                 and not events
                 and not panels
@@ -2574,7 +2580,7 @@ def create_app(
             cards.append(
                 f"""<li class="ledger-card"><a href="/lighthouse/runs/{run.id}/people/{escape(character.id)}"><span class="ledger-card__initial" aria-hidden="true">{escape(character.name[0])}</span><span class="eyebrow">{escape(availability)}</span><h2>{escape(character.name)}</h2><p>{escape(character.description)}</p><span class="ledger-note">{escape(note)}</span></a></li>"""
             )
-        content = f"""<header class="ledger-heading"><p class="eyebrow">Your visit notes</p><h1>Who is<br>who?</h1><p>Public identities are printed in ink. Notes from your own encounters appear in the margins.</p></header><ul class="ledger-grid">{"".join(cards)}</ul>"""
+        content = f"""<header class="ledger-heading"><p class="eyebrow">Your visit notes</p><h1>Who is<br>who?</h1><p>Public identities are printed in ink. Notes from your own encounters appear in the margins.</p><p>Anyone here can be messaged privately, even when they are away from public locations — open a profile to start.</p></header><ul class="ledger-grid">{"".join(cards)}</ul>"""
         return HTMLResponse(profile_shell(run, "People of Greyhaven", content))
 
     @app.get(
@@ -2741,7 +2747,7 @@ def create_app(
         for index, recap in enumerate(visible):
             panel_titles = "".join(f"<li>{escape(panel.title)}</li>" for panel in recap.panels)
             episode_items.append(
-                f"""<li class="episode-entry" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}"><a href="/lighthouse/runs/{run.id}/archive/{recap.id}"><span class="episode-number">{index + 1:02}</span><span class="episode-entry__copy"><time datetime="{recap.published_at.isoformat()}">{recap.story_date.strftime("%B %d, %Y")}</time><strong>{escape(recap.headline)}</strong><span>{escape(recap.dek)}</span></span></a><details><summary>Panels in this episode</summary><ol>{panel_titles or "<li>No panels were published.</li>"}</ol></details></li>"""
+                f"""<li class="episode-entry" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}"><a href="/lighthouse/runs/{run.id}/archive/{recap.id}"><span class="episode-number">{index + 1:02}</span><span class="episode-entry__copy"><time datetime="{recap.published_at.isoformat()}">{recap.story_date.strftime("%B %d, %Y")}</time><strong>{escape(recap.headline)}</strong><span>{escape(recap.dek)}</span></span></a><details><summary>Dispatches in this episode</summary><ol>{panel_titles or "<li>No dispatches were published.</li>"}</ol></details></li>"""
             )
         empty = (
             f'<li class="archive-empty"><strong>The archive is waiting.</strong><span>{escape(archive_publication_message(database, run, recaps))}</span></li>'
@@ -2782,10 +2788,10 @@ def create_app(
         recap = recaps[index]
         panels = (
             "".join(
-                f'<article class="archive-panel"><p class="eyebrow">Panel {panel_index + 1:02}</p><h2>{escape(panel.title)}</h2><p>{escape(panel.body)}</p><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=recap_panel&amp;target_id={panel.source_id}&amp;artifact_id={recap.id}">Flag this panel</a></article>'
+                f'<article class="archive-panel" id="dispatch-{panel.source_id}"><p class="eyebrow">Dispatch {panel_index + 1:02}</p><h2>{escape(panel.title)}</h2><p>{escape(panel.body)}</p><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=recap_panel&amp;target_id={panel.source_id}&amp;artifact_id={recap.id}">Flag this dispatch</a></article>'
                 for panel_index, panel in enumerate(recap.panels)
             )
-            or '<p class="archive-empty">This quiet-day story update contains no panels.</p>'
+            or '<p class="archive-empty">This quiet-day story update contains no dispatches.</p>'
         )
         previous_link = (
             f'<a rel="prev" href="/lighthouse/runs/{run.id}/archive/{recaps[index - 1].id}">← Previous episode</a>'
