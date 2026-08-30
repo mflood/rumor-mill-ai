@@ -344,6 +344,7 @@ def test_lighthouse_historical_archive_and_people_are_safe_and_read_only(api) ->
     assert "Season contact closed" in chooser.text
     assert "This season is read-only" in conversation_page.text
     assert 'id="composer"' not in conversation_page.text
+    assert "suggested-questions" not in conversation_page.text
     rejected = client.post(
         f"/api/v1/conversations/{conversation.json()['id']}/messages",
         json={"content": "Can you still hear me?", "client_message_id": str(uuid4())},
@@ -2639,6 +2640,8 @@ def test_character_picker_and_conversation_page_are_server_rendered(api) -> None
     assert "A private word with" in page.text
     assert "This is a live private exchange" in page.text
     assert "signal-wire" in page.text
+    assert 'id="suggested-questions"' in page.text
+    assert "What happened to Elias?" in page.text
     script = client.get("/static/conversation.js")
     assert "ReadableStream" not in script.text  # uses the widely supported reader API directly
     assert "getReader()" in script.text

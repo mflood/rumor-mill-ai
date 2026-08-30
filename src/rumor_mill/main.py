@@ -3327,6 +3327,9 @@ def create_app(
         if run.status != RunStatus.RUNNING:
             line_status = "This season is no longer live. This private exchange is read-only."
             page = page.replace(
+                '<div class="suggested-questions" id="suggested-questions" aria-label="Suggested questions">\n        <button type="button" data-suggested-question>What happened to Elias?</button>\n        <button type="button" data-suggested-question>Where were you last night?</button>\n        <button type="button" data-suggested-question>What do you know about Northlight?</button>\n      </div>\n      ',
+                "",
+            ).replace(
                 '<form class="dispatch-console" id="composer" aria-busy="false">\n        <label for="message">What do you ask?</label>\n        <textarea id="message" maxlength="4000" required rows="3"></textarea>\n        <div><span id="count">0 / 4000</span><button type="submit">Send privately</button></div>\n      </form>',
                 '<p class="line-status" role="status"><strong>This season is read-only.</strong> You can review this private exchange, but cannot send new messages.</p>',
             )
