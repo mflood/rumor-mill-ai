@@ -2874,6 +2874,61 @@ def test_secret_leak_is_withheld_and_safely_diagnosed(
     assert client.get(f"/api/v1/conversations/{conversation['id']}").json()["messages"] == []
 
 
+def test_suggested_questions_are_personalized_from_the_recap_threads(api) -> None:  # type: ignore[no-untyped-def]
+    """Regression test for P1-6: chips must come from this character's own threads,
+    not the same three hardcoded strings for every character."""
+    client, factory = api
+    run_id = UUID(str(initialize(client)["id"]))
+    start_visitor_session(client)
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        recap = DailyRecap(
+            story_date=run.started_at.date(),
+            headline="A quiet find",
+            dek="One public dispatch from Greyhaven today.",
+            panels=(
+                RecapPanel(
+                    source_id=uuid4(),
+                    title="A ledger discovered",
+                    body="Bea found something in the archive.",
+                    location_id="archive",
+                    character_id="bea",
+                ),
+            ),
+            active_threads=(
+                RecapThread(text="What did Bea find in the archive?", character_id="bea"),
+            ),
+            suggested_location_ids=("archive",),
+            suggested_character_ids=("bea",),
+            state="active",
+        )
+        database.add(
+            ArtifactModel(
+                run_id=run_id,
+                kind="daily_recap",
+                title=recap.headline,
+                body=recap.dek,
+                generated_at=run.started_at,
+                story_date=recap.story_date,
+                source_ids=[],
+                payload=recap.artifact_payload(),
+            )
+        )
+        database.commit()
+
+    started = client.post(f"/lighthouse/runs/{run_id}/talk/bea", follow_redirects=False)
+    bea_page = client.get(started.headers["location"])
+    assert "What did Bea find in the archive?" in bea_page.text
+
+    conversation = client.post(
+        f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"}
+    ).json()
+    ada_page = client.get(f"/lighthouse/conversations/{conversation['id']}")
+    assert "What did Bea find in the archive?" not in ada_page.text
+
+
 def test_character_picker_and_conversation_page_are_server_rendered(api) -> None:  # type: ignore[no-untyped-def]
     client, _ = api
     run_id = initialize(client)["id"]
