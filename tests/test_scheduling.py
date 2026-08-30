@@ -58,6 +58,10 @@ class WorkPlan:
             ScheduledWork("scene:harbor", "autonomous_scene", through, {"place": "harbor"}),
         )
 
+    def exhausted(self, run: RunRecord, *, at: datetime) -> bool:
+        del run, at
+        return False
+
 
 def uid(value: int) -> UUID:
     return UUID(int=value)
@@ -150,6 +154,39 @@ def test_catch_up_is_bounded_and_accelerated(scheduler_database) -> None:  # typ
     assert result.catch_up_limited
 
 
+def test_bounded_catch_up_preserves_leftover_time_for_the_next_advance(scheduler_database) -> None:  # type: ignore[no-untyped-def]
+    """Regression test: a capped catch-up must not silently drop elapsed wall time.
+
+    Resetting the anchor to "now" after a capped advance discards whatever wall-clock
+    time the cap couldn't consume, so the simulation clock permanently falls behind.
+    The anchor must instead move only by the wall-clock time the applied ticks actually
+    consumed, leaving the remainder available to the next advance().
+    """
+    factory = scheduler_database
+    world = WorldRecord(uid(1), "fast-world", 1, {}, START)
+    run = RunRecord(
+        uid(2),
+        uid(1),
+        RunStatus.RUNNING,
+        1,
+        START,
+        clock_rate=2,
+        tick_seconds=300,
+        max_catch_up_ticks=2,
+    )
+    seed_run(SqlAlchemyUnitOfWork(factory), world, run)
+    clock = FixedClock(START + timedelta(minutes=30))
+    scheduler = SimulationScheduler(lambda: SqlAlchemyUnitOfWork(factory), clock=clock)
+
+    first = scheduler.advance(run.id)
+    assert first.ticks == 2
+    assert first.catch_up_limited
+
+    second = scheduler.advance(run.id)
+    assert second.ticks == 2
+    assert second.catch_up_limited
+
+
 def test_scheduler_rejects_invalid_inputs_and_work(scheduler_database) -> None:  # type: ignore[no-untyped-def]
     factory = scheduler_database
     run = seed(factory)
@@ -169,6 +206,10 @@ def test_scheduler_rejects_invalid_inputs_and_work(scheduler_database) -> None: 
         def due_work(self, run, *, after, through):  # type: ignore[no-untyped-def]
             del run, after
             return (ScheduledWork("late", "beat", through + timedelta(seconds=1), {}),)
+
+        def exhausted(self, run, *, at):  # type: ignore[no-untyped-def]
+            del run, at
+            return False
 
     bad = SimulationScheduler(
         lambda: SqlAlchemyUnitOfWork(factory), BadPlan(), FixedClock(START + timedelta(minutes=5))
@@ -271,6 +312,99 @@ def test_lighthouse_work_respects_dependencies_windows_and_persisted_completion(
     # Stable keys suppress repeated work even when a later catch-up interval covers the window.
     clock.value = START + timedelta(hours=23)
     assert scheduler.advance(run.id).jobs_enqueued == 0
+
+
+def _season_definition() -> dict[str, Any]:
+    return {
+        "beat_graph": {
+            "entry_beat_ids": ["entry"],
+            "beats": [
+                {
+                    "id": "entry",
+                    "title": "Entry",
+                    "summary": "The story begins.",
+                    "character_ids": [],
+                    "location_id": "harbor",
+                    "earliest_day": 1,
+                    "latest_day": 1,
+                }
+            ],
+        },
+        "routines": [
+            {
+                "id": "harbor-watch",
+                "character_id": "keeper",
+                "location_id": "harbor",
+                "days": [1],
+                "start_time": "00:10",
+                "end_time": "01:00",
+                "activity": "Watching the harbor.",
+                "public_activity": "Harbor watch.",
+            },
+            {
+                "id": "no-days",
+                "character_id": "keeper",
+                "location_id": "harbor",
+                "days": [],
+                "start_time": "00:10",
+                "end_time": "01:00",
+                "activity": "Never scheduled.",
+                "public_activity": "Never scheduled.",
+            },
+        ],
+    }
+
+
+def test_lighthouse_exhausted_is_true_only_past_the_last_possible_beat_or_routine(
+    scheduler_database: Any,
+) -> None:
+    factory = scheduler_database
+    world = WorldRecord(uid(1), "lighthouse", 1, _season_definition(), START)
+    other_world = WorldRecord(uid(3), "other-world", 1, {}, START)
+    run = RunRecord(uid(2), uid(1), RunStatus.RUNNING, 42, START)
+    other_run = RunRecord(uid(4), uid(3), RunStatus.RUNNING, 42, START)
+    seed_run(SqlAlchemyUnitOfWork(factory), world, run)
+    with SqlAlchemyUnitOfWork(factory) as unit_of_work:
+        unit_of_work.worlds.add(other_world)
+        unit_of_work.runs.add(other_run)
+        unit_of_work.commit()
+    source = LighthouseWorkSource(lambda: SqlAlchemyUnitOfWork(factory))
+
+    assert source.exhausted(other_run, at=START + timedelta(days=99)) is False
+    assert source.exhausted(run, at=START) is False
+    assert source.exhausted(run, at=START + timedelta(days=1) - timedelta(seconds=1)) is False
+    assert source.exhausted(run, at=START + timedelta(days=1)) is True
+
+
+def test_scheduler_marks_a_run_completed_once_the_season_is_exhausted(
+    scheduler_database: Any,
+) -> None:
+    factory = scheduler_database
+    world = WorldRecord(uid(1), "lighthouse", 1, _season_definition(), START)
+    run = RunRecord(
+        uid(2), uid(1), RunStatus.RUNNING, 42, START, tick_seconds=300, max_catch_up_ticks=10_000
+    )
+    seed_run(SqlAlchemyUnitOfWork(factory), world, run)
+    clock = FixedClock(START + timedelta(days=2))
+    scheduler = SimulationScheduler(
+        lambda: SqlAlchemyUnitOfWork(factory),
+        LighthouseWorkSource(lambda: SqlAlchemyUnitOfWork(factory)),
+        clock,
+    )
+
+    scheduler.advance(run.id)
+
+    with SqlAlchemyUnitOfWork(factory) as unit_of_work:
+        stored = unit_of_work.runs.get(run.id)
+        assert stored is not None
+        assert stored.status is RunStatus.COMPLETED
+        assert stored.ended_at is not None
+
+    # A completed run must not be reopened by a later advance.
+    clock.value = START + timedelta(days=3)
+    scheduler.advance(run.id)
+    with SqlAlchemyUnitOfWork(factory) as unit_of_work:
+        assert unit_of_work.runs.get(run.id).status is RunStatus.COMPLETED  # type: ignore[union-attr]
 
 
 def test_lighthouse_does_not_enqueue_a_dependency_after_its_latest_day(

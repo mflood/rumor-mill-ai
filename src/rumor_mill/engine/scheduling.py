@@ -6,7 +6,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from rumor_mill.engine.ports import ClockMode, JobRecord, JobStatus, RunRecord, UnitOfWork
+from rumor_mill.engine.ports import (
+    ClockMode,
+    JobRecord,
+    JobStatus,
+    RunRecord,
+    RunStatus,
+    UnitOfWork,
+)
 
 
 class Clock(Protocol):
@@ -33,6 +40,10 @@ class WorkSource(Protocol):
         self, run: RunRecord, *, after: datetime, through: datetime
     ) -> Iterable[ScheduledWork]: ...
 
+    def exhausted(self, run: RunRecord, *, at: datetime) -> bool:
+        """Return True once no further work can ever become due for this run."""
+        ...
+
 
 class NoScheduledWork:
     def due_work(
@@ -40,6 +51,10 @@ class NoScheduledWork:
     ) -> Iterable[ScheduledWork]:
         del run, after, through
         return ()
+
+    def exhausted(self, run: RunRecord, *, at: datetime) -> bool:
+        del run, at
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +109,13 @@ class SimulationScheduler:
                     )
                     enqueued += unit_of_work.jobs.add_once(job)
 
-                unit_of_work.runs.update_clock(run.id, simulation_time=target, wall_time_anchor=now)
+                consumed = timedelta(seconds=ticks * run.tick_seconds / run.clock_rate)
+                unit_of_work.runs.update_clock(
+                    run.id, simulation_time=target, wall_time_anchor=anchor + consumed
+                )
+
+            if run.status is RunStatus.RUNNING and self._work_source.exhausted(run, at=target):
+                unit_of_work.runs.mark_completed(run.id, ended_at=target)
             unit_of_work.commit()
             return AdvanceResult(previous, target, ticks, enqueued, limited)
 

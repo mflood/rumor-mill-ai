@@ -82,6 +82,7 @@ class ScenePlan(SceneGenerationModel):
     scheduled_at: datetime
     participant_ids: tuple[CharacterId, ...] = Field(min_length=1)
     location_id: LocationId
+    authored_location_id: str | None = None
     goals: tuple[str, ...] = Field(min_length=1)
     constraints: tuple[str, ...] = ()
     relevant_context: tuple[ContextItem, ...] = ()
@@ -354,6 +355,7 @@ class SceneGenerationService:
                 generated_at=plan.scheduled_at,
                 provenance=provenance,
                 lifecycle=lifecycle,
+                location_id=plan.authored_location_id,
             )
             for hook in output.presentation_hooks
         )

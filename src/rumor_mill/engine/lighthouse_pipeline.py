@@ -117,6 +117,26 @@ class LighthouseWorkSource:
                     )
         return sorted(work, key=lambda item: (item.scheduled_at, item.key))
 
+    def exhausted(self, run: RunRecord, *, at: datetime) -> bool:
+        """Return True once no authored beat or routine can ever become due again."""
+        with self._unit_of_work_factory() as unit_of_work:
+            world = unit_of_work.worlds.get(run.world_id)
+        if world is None or world.slug != "lighthouse":
+            return False
+
+        definition = world.definition
+        deadlines = [
+            run.started_at + timedelta(days=int(beat["latest_day"]))
+            for beat in definition.get("beat_graph", {}).get("beats", [])
+        ]
+        for routine in definition.get("routines", []):
+            days = routine.get("days", [])
+            if not days:
+                continue
+            offset = _routine_offset(routine.get("start_time"))
+            deadlines.append(run.started_at + timedelta(days=int(max(days)) - 1) + offset)
+        return bool(deadlines) and at >= max(deadlines)
+
 
 class LighthouseStoryHandler:
     """Prepare deterministic authored output, then commit it with job completion."""
@@ -149,6 +169,8 @@ class LighthouseStoryHandler:
             detail=f"Lighthouse {story_kind} {authored_id}",
         )
         lifecycle = Lifecycle(started_at=job.scheduled_at)
+        authored_location_id = str(payload["location_id"])
+        location_id = LocationId(_stable_id(job.run_id, "location", authored_location_id))
         if story_kind == "beat":
             title = str(payload["title"])
             summary = str(payload["summary"])
@@ -156,17 +178,12 @@ class LighthouseStoryHandler:
                 CharacterId(_stable_id(job.run_id, "character", str(item)))
                 for item in payload.get("character_ids", [])
             )
-            location = str(payload["location_id"])
-            location_id = LocationId(_stable_id(job.run_id, "location", location))
             body = summary
         else:
             title = str(payload["public_activity"])
             summary = f"{title} continues in Greyhaven."
             participant_ids = (
                 CharacterId(_stable_id(job.run_id, "character", str(payload["character_id"]))),
-            )
-            location_id = LocationId(
-                _stable_id(job.run_id, "location", str(payload["location_id"]))
             )
             body = summary
 
@@ -177,6 +194,7 @@ class LighthouseStoryHandler:
                     scheduled_at=job.scheduled_at,
                     participant_ids=participant_ids,
                     location_id=location_id,
+                    authored_location_id=authored_location_id,
                     goals=(summary,),
                     constraints=(
                         "Respect authored Lighthouse canon and reveal no hidden story text.",
@@ -194,6 +212,7 @@ class LighthouseStoryHandler:
                 body=body,
                 participant_ids=participant_ids,
                 location_id=location_id,
+                authored_location_id=authored_location_id,
                 scene_id=scene_id,
                 event_id=event_id,
                 artifact_id=artifact_id,
@@ -223,6 +242,7 @@ class LighthouseStoryHandler:
         body: str,
         participant_ids: tuple[CharacterId, ...],
         location_id: LocationId,
+        authored_location_id: str,
         scene_id: SceneId,
         event_id: EventId,
         artifact_id: PresentationArtifactId,
@@ -258,6 +278,7 @@ class LighthouseStoryHandler:
             generated_at=job.scheduled_at,
             provenance=provenance,
             lifecycle=lifecycle,
+            location_id=authored_location_id,
         )
         return GeneratedSceneRecord(
             scene=scene,

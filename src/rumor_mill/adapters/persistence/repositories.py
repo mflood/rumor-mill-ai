@@ -139,6 +139,13 @@ class SqlAlchemyRunRepository:
             .values(simulation_time=simulation_time, wall_time_anchor=wall_time_anchor)
         )
 
+    def mark_completed(self, run_id: UUID, *, ended_at: datetime) -> None:
+        self._session.execute(
+            update(RunModel)
+            .where(RunModel.id == run_id, RunModel.status == RunStatus.RUNNING.value)
+            .values(status=RunStatus.COMPLETED.value, ended_at=ended_at)
+        )
+
     @staticmethod
     def _record(model: RunModel | None) -> RunRecord | None:
         if model is None:

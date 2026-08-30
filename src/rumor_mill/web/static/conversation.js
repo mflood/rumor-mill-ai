@@ -2,6 +2,7 @@
   const room = document.querySelector(".radio-room");
   if (!room) return;
   const id = room.dataset.conversationId;
+  const characterName = room.dataset.characterName || "Reply";
   const list = document.querySelector("#messages");
   const form = document.querySelector("#composer");
   const input = document.querySelector("#message");
@@ -21,7 +22,7 @@
   const render = (message) => {
     const item = document.createElement("li");
     item.className = `signal-message signal-message--${message.role} signal-message--${message.kind}`;
-    const label = message.kind === "action" ? "Action" : message.kind === "refusal" ? "Boundary" : message.kind === "hesitation" ? "Hesitation" : message.role === "visitor" ? "You" : "Reply";
+    const label = message.kind === "action" ? "Action" : message.kind === "refusal" ? "Boundary" : message.role === "visitor" ? "You" : characterName;
     item.innerHTML = `<span>${label}</span><p></p>`;
     item.querySelector("p").textContent = message.content;
     if (message.id) {

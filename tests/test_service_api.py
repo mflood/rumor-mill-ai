@@ -2429,9 +2429,14 @@ def test_browser_security_controls_and_session_rotation(api) -> None:  # type: i
 
     response = client.get("/api/v1/visitors/me")
     assert response.headers["content-security-policy"].startswith("default-src 'self'")
+    assert "https://fonts.googleapis.com" in response.headers["content-security-policy"]
+    assert "https://fonts.gstatic.com" in response.headers["content-security-policy"]
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "same-origin"
     assert "access-control-allow-origin" not in response.headers
+
+    docs = client.get("/docs")
+    assert "https://cdn.jsdelivr.net" in docs.headers["content-security-policy"]
 
     rejected = client.delete(
         "/api/v1/visitors/session", headers={"Origin": "https://attacker.example"}
@@ -2627,6 +2632,95 @@ def test_unavailable_character_cannot_start_a_conversation(api) -> None:  # type
         ).status_code
         == 409
     )
+
+
+def test_mara_conversation_location_tracks_active_routine_not_home(api) -> None:  # type: ignore[no-untyped-def]
+    client, factory = api
+    definition = json.loads((ROOT / "docs/worlds/lighthouse/world.json").read_text())
+    initialized = client.post(
+        "/api/v1/worlds/lighthouse/runs",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"definition": definition, "clock_mode": "manual"},
+    )
+    assert initialized.status_code == 201
+    run_id = UUID(initialized.json()["id"])
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.simulation_time = datetime.combine(
+            run.started_at.date() + timedelta(days=1), datetime.min.time()
+        ).replace(hour=1, minute=28)
+        database.commit()
+
+    start_visitor_session(client)
+    conversation = client.post(
+        f"/api/v1/runs/{run_id}/conversations", json={"character_id": "mara"}
+    ).json()
+    provider = cast(MutableConversationProvider, client.app_state["conversation_provider"])
+
+    def ask_for_context(question: str) -> dict[str, object]:
+        response = client.post(
+            f"/api/v1/conversations/{conversation['id']}/messages", json={"content": question}
+        )
+        assert response.status_code == 200
+        assert provider.last_request is not None
+        developer_context = provider.last_request.messages[1].content.partition("\n")[2]
+        return cast(dict[str, object], json.loads(developer_context))
+
+    overnight = ask_for_context("Where are you?")
+    overnight_location = cast(dict[str, object], overnight["location"])
+    assert overnight_location["home_location_id"] is not None
+    assert overnight_location["home_location_name"] == "Northlight Lighthouse"
+    assert overnight_location["current_location_id"] is None
+    assert overnight_location["current_location_name"] is None
+    assert overnight_location["publicly_present"] is False
+    assert overnight_location["private_contact_mode"] == "live"
+
+    with factory() as database:
+        run = database.get(RunModel, run_id)
+        assert run is not None
+        run.simulation_time = run.simulation_time.replace(hour=5, minute=30)
+        database.commit()
+
+    during_routine = ask_for_context("And now?")
+    location = cast(dict[str, object], during_routine["location"])
+    assert location["current_location_name"] == "Northlight Lighthouse"
+    assert location["publicly_present"] is True
+
+
+def test_explicit_private_contact_without_home_or_public_presence_has_unknown_location(  # type: ignore[no-untyped-def]
+    api,
+) -> None:
+    client, _ = api
+    definition = world_payload()
+    ada = cast(list[dict[str, object]], definition["cast"])[0]
+    ada.pop("home_location_id")
+    ada["private_contact_mode"] = "live"
+    initialized = client.post(
+        "/api/v1/worlds/lantern-market/runs",
+        headers={"Authorization": "Bearer operator-secret"},
+        json={"definition": definition, "clock_mode": "manual"},
+    )
+    run_id = initialized.json()["id"]
+    start_visitor_session(client)
+    conversation = client.post(f"/api/v1/runs/{run_id}/conversations", json={"character_id": "ada"})
+    assert conversation.status_code == 201
+    response = client.post(
+        f"/api/v1/conversations/{conversation.json()['id']}/messages",
+        json={"content": "Where are you?"},
+    )
+    assert response.status_code == 200
+    provider = cast(MutableConversationProvider, client.app_state["conversation_provider"])
+    assert provider.last_request is not None
+    context = json.loads(provider.last_request.messages[1].content.partition("\n")[2])
+    assert context["location"] == {
+        "home_location_id": None,
+        "home_location_name": None,
+        "current_location_id": None,
+        "current_location_name": None,
+        "publicly_present": False,
+        "private_contact_mode": "live",
+    }
 
 
 def test_operator_api_can_be_disabled(tmp_path: Path) -> None:

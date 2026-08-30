@@ -16,6 +16,7 @@ from rumor_mill.engine.conversation import (
     ConversationEventKind,
     ConversationHistoryMessage,
     ConversationHistoryRole,
+    ConversationLocationContext,
     ConversationMemory,
     ConversationSafetyError,
     ConversationStreamEvent,
@@ -44,8 +45,14 @@ def context() -> ConversationContext:
         character_id=CharacterId(uid(2)),
         character_name="Mara Venn",
         persona="A guarded lighthouse keeper who speaks precisely.",
-        location_id=LocationId(uid(3)),
-        location_name="Service room",
+        location=ConversationLocationContext(
+            home_location_id=LocationId(uid(6)),
+            home_location_name="Keeper's cottage",
+            current_location_id=LocationId(uid(3)),
+            current_location_name="Service room",
+            publicly_present=True,
+            private_contact_mode="live",
+        ),
         goals=("Protect June", "Understand why the light failed"),
         beliefs=(
             ConversationBelief(
@@ -119,9 +126,14 @@ def test_prompt_contains_required_scope_and_fences_untrusted_input() -> None:
     system, developer, user = provider.request.messages
     assert "Never reveal" in system.content
     assert "other character's private state" in system.content
+    assert "must never be asserted as current whereabouts" in system.content
+    assert "whereabouts are unknown or private" in system.content
     for value in (
         "persona",
-        "location_name",
+        "home_location_name",
+        "current_location_name",
+        "publicly_present",
+        "private_contact_mode",
         "goals",
         "beliefs",
         "relevant_memories",
@@ -274,3 +286,28 @@ def test_context_rejects_naive_time_and_duplicate_subjective_records() -> None:
     values["relevant_memories"] = values["relevant_memories"] * 2
     with pytest.raises(ValidationError, match="memory IDs"):
         ConversationContext.model_validate(values)
+
+
+def test_location_context_keeps_home_current_presence_and_contact_distinct() -> None:
+    unknown = ConversationLocationContext(
+        home_location_id=LocationId(uid(6)),
+        home_location_name="Keeper's cottage",
+        publicly_present=False,
+        private_contact_mode="live",
+    )
+    assert unknown.current_location_id is None
+
+    with pytest.raises(ValidationError, match="home location ID and name"):
+        ConversationLocationContext(
+            home_location_id=LocationId(uid(3)),
+            publicly_present=False,
+            private_contact_mode="live",
+        )
+    with pytest.raises(ValidationError, match="current location ID and name"):
+        ConversationLocationContext(
+            current_location_id=LocationId(uid(3)),
+            publicly_present=False,
+            private_contact_mode="live",
+        )
+    with pytest.raises(ValidationError, match="public presence requires"):
+        ConversationLocationContext(publicly_present=True, private_contact_mode="live")
