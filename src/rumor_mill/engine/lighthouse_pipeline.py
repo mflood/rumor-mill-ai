@@ -117,6 +117,26 @@ class LighthouseWorkSource:
                     )
         return sorted(work, key=lambda item: (item.scheduled_at, item.key))
 
+    def exhausted(self, run: RunRecord, *, at: datetime) -> bool:
+        """Return True once no authored beat or routine can ever become due again."""
+        with self._unit_of_work_factory() as unit_of_work:
+            world = unit_of_work.worlds.get(run.world_id)
+        if world is None or world.slug != "lighthouse":
+            return False
+
+        definition = world.definition
+        deadlines = [
+            run.started_at + timedelta(days=int(beat["latest_day"]))
+            for beat in definition.get("beat_graph", {}).get("beats", [])
+        ]
+        for routine in definition.get("routines", []):
+            days = routine.get("days", [])
+            if not days:
+                continue
+            offset = _routine_offset(routine.get("start_time"))
+            deadlines.append(run.started_at + timedelta(days=int(max(days)) - 1) + offset)
+        return bool(deadlines) and at >= max(deadlines)
+
 
 class LighthouseStoryHandler:
     """Prepare deterministic authored output, then commit it with job completion."""
