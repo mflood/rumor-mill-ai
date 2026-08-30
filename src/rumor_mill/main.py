@@ -2714,6 +2714,28 @@ def create_app(
             "unavailable": "Private contact is presently unavailable.",
         }[mode]
 
+    def suggested_questions_markup(
+        run: RunRecord, database: Session, character: AuthoredCharacter
+    ) -> str:
+        """Offer up to three starter questions, personalized to this character.
+
+        Prefers active threads the published recap already aimed at this character
+        (real, spoiler-safe in-fiction hooks) and pads out with generic prompts.
+        """
+        recap = latest_published_recap(database, run.id)
+        thread_questions = (
+            [item.text for item in recap.active_threads if item.character_id == character.id]
+            if recap is not None
+            else []
+        )
+        fallback = "What happened to you?" if character.id == "elias" else "What happened to Elias?"
+        pool = [*thread_questions, "Where were you last night?", fallback]
+        questions = list(dict.fromkeys(pool))[:3]
+        return "".join(
+            f'<button type="button" data-suggested-question>{escape(question)}</button>'
+            for question in questions
+        )
+
     def public_connections(world: WorldDefinition, character_id: str) -> list[AuthoredCharacter]:
         connected_ids: set[str] = set()
         for relationship in world.initial_relationships:
@@ -3601,13 +3623,16 @@ def create_app(
         if run.status != RunStatus.RUNNING:
             line_status = "This season is no longer live. This private exchange is read-only."
             page = page.replace(
-                '<div class="suggested-questions" id="suggested-questions" aria-label="Suggested questions">\n        <button type="button" data-suggested-question>What happened to Elias?</button>\n        <button type="button" data-suggested-question>Where were you last night?</button>\n        <button type="button" data-suggested-question>What do you know about Northlight?</button>\n      </div>\n      ',
+                '<div class="suggested-questions" id="suggested-questions" aria-label="Suggested questions">\n        <!-- SUGGESTED_QUESTIONS -->\n      </div>\n      ',
                 "",
             ).replace(
                 '<form class="dispatch-console" id="composer" aria-busy="false">\n        <label for="message">What do you ask?</label>\n        <!-- CLUE_PICKER -->\n        <textarea id="message" maxlength="4000" required rows="3"></textarea>\n        <div><span id="count">0 / 4000</span><button type="submit">Send privately</button></div>\n      </form>',
                 '<p class="line-status" role="status"><strong>This season is read-only.</strong> You can review this private exchange, but cannot send new messages.</p>',
             )
         page = page.replace("<!-- CLUE_PICKER -->", clue_picker)
+        page = page.replace(
+            "<!-- SUGGESTED_QUESTIONS -->", suggested_questions_markup(run, database, character)
+        )
         return HTMLResponse(
             page.replace("{{ conversation_id }}", str(model.id))
             .replace("{{ character_name }}", escape(character.name))
