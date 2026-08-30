@@ -154,9 +154,7 @@ def test_catch_up_is_bounded_and_accelerated(scheduler_database) -> None:  # typ
     assert result.catch_up_limited
 
 
-def test_bounded_catch_up_preserves_leftover_time_for_the_next_advance(
-    scheduler_database,  # type: ignore[no-untyped-def]
-) -> None:
+def test_bounded_catch_up_preserves_leftover_time_for_the_next_advance(scheduler_database) -> None:  # type: ignore[no-untyped-def]
     """Regression test: a capped catch-up must not silently drop elapsed wall time.
 
     Resetting the anchor to "now" after a capped advance discards whatever wall-clock
@@ -208,6 +206,10 @@ def test_scheduler_rejects_invalid_inputs_and_work(scheduler_database) -> None: 
         def due_work(self, run, *, after, through):  # type: ignore[no-untyped-def]
             del run, after
             return (ScheduledWork("late", "beat", through + timedelta(seconds=1), {}),)
+
+        def exhausted(self, run, *, at):  # type: ignore[no-untyped-def]
+            del run, at
+            return False
 
     bad = SimulationScheduler(
         lambda: SqlAlchemyUnitOfWork(factory), BadPlan(), FixedClock(START + timedelta(minutes=5))
