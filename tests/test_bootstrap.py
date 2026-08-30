@@ -49,6 +49,15 @@ def test_empty_database_bootstraps_one_wall_clock_lighthouse_season(tmp_path: Pa
         recap = DailyRecap.model_validate(artifact.payload["recap"])
         assert recap.headline == "Northlight goes dark."
         assert len(recap.panels) == 3
+        # Regression test for P0-5: the opening recap must not attribute an observation
+        # to a character (Iris) who holds no supporting claim about it and denies it
+        # when asked directly in conversation.
+        cliff_panel = next(
+            panel for panel in recap.panels if panel.title == "A second light beneath the cliff"
+        )
+        assert cliff_panel.character_id is None
+        assert "Iris" not in cliff_panel.body
+        assert "iris" not in recap.suggested_character_ids
 
 
 def test_repeat_bootstrap_selects_live_season_without_changing_state(tmp_path: Path) -> None:

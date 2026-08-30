@@ -48,9 +48,12 @@ def opening_recap(run_id: UUID, started_at: datetime) -> DailyRecap:
             RecapPanel(
                 source_id=opening_source_id(run_id, 3),
                 title="A second light beneath the cliff",
-                body=("Iris Bell saw it from Widow's Steps. She will not say who stood beside it."),
+                body=(
+                    "A second light moved near Widow's Steps before the storm broke. No one "
+                    "who saw it will say who stood beside it."
+                ),
                 location_id="widows-steps",
-                character_id="iris",
+                character_id=None,
             ),
         ),
         active_threads=(
@@ -59,7 +62,7 @@ def opening_recap(run_id: UUID, started_at: datetime) -> DailyRecap:
             "Why was the skiff lamp warm?",
         ),
         suggested_location_ids=("northlight", "harbor-dispatch", "widows-steps"),
-        suggested_character_ids=("mara", "elias", "iris"),
+        suggested_character_ids=("mara", "elias"),
         state="first_day",
     )
 
