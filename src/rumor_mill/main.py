@@ -2938,7 +2938,7 @@ def create_app(
         location_state = TownState(world).character_location_state(
             character.id,
             day=story_day(run),
-            at=simulation_time.time().replace(tzinfo=None),
+            at=simulation_time.time(),
         )
         namespace = uuid5(NAMESPACE_URL, world.metadata.id)
 

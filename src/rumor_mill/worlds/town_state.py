@@ -69,7 +69,6 @@ class TownState:
         context, while ``publicly_present`` is true only for an active public routine.
         """
 
-        self._validate_day(day)
         if character_id not in self._characters:
             raise KeyError(character_id)
         character = self._characters[character_id]
