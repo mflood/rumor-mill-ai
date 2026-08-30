@@ -2677,6 +2677,45 @@ def test_character_knowledge_and_disclosure_are_gated_on_beat_completion(api) ->
     assert "Do not disclose this protected claim" not in after_revealed
 
 
+def test_trust_persists_from_conversation_output_and_softens_a_high_trust_boundary(api) -> None:  # type: ignore[no-untyped-def]
+    """Regression test for P0-3: trust must be written, and must relax (not remove) a
+    still-unrevealed secret's disclosure boundary once it crosses the trust threshold."""
+    client, factory = api
+    provider = cast(MutableConversationProvider, client.app_state["conversation_provider"])
+    run_id = UUID(str(initialize(client)["id"]))
+    start_visitor_session(client)
+    conversation = client.post(
+        f"/api/v1/runs/{run_id}/conversations", json={"character_id": "bea"}
+    ).json()
+
+    def ask(question: str) -> None:
+        response = client.post(
+            f"/api/v1/conversations/{conversation['id']}/messages",
+            json={"content": question},
+        )
+        assert response.status_code == 200
+
+    def sent_text() -> str:
+        assert provider.last_request is not None
+        return "\n".join(item.content for item in provider.last_request.messages)
+
+    provider.set_response(trust_delta=0.1)
+    ask("I mean you no harm.")
+    with factory() as database:
+        state = database.query(VisitorCharacterStateModel).one()
+        assert float(state.trust) == pytest.approx(0.1)
+
+    with factory() as database:
+        state = database.query(VisitorCharacterStateModel).one()
+        state.trust = 0.65
+        database.commit()
+
+    ask("Will you tell me the truth now?")
+    high_trust = sent_text()
+    assert "presses you with specific" in high_trust
+    assert "Do not disclose this protected claim" not in high_trust
+
+
 @pytest.mark.parametrize(
     ("failure", "status_code", "detail"),
     [
