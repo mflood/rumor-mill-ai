@@ -833,6 +833,23 @@ def create_app(
             f"{escape(str(clock['label']))}</span>"
         )
 
+    def completed_beat_ids(database: Session, run: RunRecord) -> frozenset[str]:
+        """Return authored beat ids whose Lighthouse story job has completed.
+
+        Matches the scheduler's idempotency-key scheme `run:{run.id}:beat:{beat_id}`
+        (see LighthouseWorkSource.due_work), so a beat's completion here always agrees
+        with what actually enqueued and ran the beat's job.
+        """
+        prefix = f"run:{run.id}:beat:"
+        keys = database.scalars(
+            select(JobModel.idempotency_key).where(
+                JobModel.run_id == run.id,
+                JobModel.kind == LIGHTHOUSE_STORY_JOB,
+                JobModel.status == "completed",
+            )
+        )
+        return frozenset(key.rsplit(":", 1)[-1] for key in keys if key.startswith(prefix))
+
     def dispatch_status_markup(database: Session, run: RunRecord, world: WorldDefinition) -> str:
         """Describe the next authoritative public story-work boundary.
 
@@ -868,11 +885,7 @@ def create_app(
             return '<p data-dispatch-status data-state="overdue"><span class="status-dot" aria-hidden="true"></span>The next public story update is being prepared.</p>'
 
         candidates = [_aware(job.scheduled_at) for job in incomplete_jobs]
-        completed_beats = {
-            key.rsplit(":", 1)[-1]
-            for key in completed_keys
-            if key.startswith(f"run:{run.id}:beat:")
-        }
+        completed_beats = completed_beat_ids(database, run)
         queued_keys = {job.idempotency_key for job in incomplete_jobs}
         for beat in world.beat_graph.beats:
             key = f"run:{run.id}:beat:{beat.id}"
@@ -3035,6 +3048,7 @@ def create_app(
     def character_context(
         model: ConversationModel,
         state_model: VisitorCharacterStateModel,
+        database: Session,
     ) -> ConversationContext:
         run, world = load_run(model.run_id)
         character = next(item for item in world.cast if item.id == model.participant_ids[0])
@@ -3055,7 +3069,24 @@ def create_app(
                 else None
             )
 
-        known_truth = [item for item in world.truth if character.id in item.character_ids]
+        completed_beats = completed_beat_ids(database, run)
+        established_by_beat: dict[str, bool] = {}
+        revealed_by_beat: dict[str, bool] = {}
+        for beat in world.beat_graph.beats:
+            for truth_id in beat.establishes_truth_ids:
+                established_by_beat[truth_id] = (
+                    established_by_beat.get(truth_id, False) or beat.id in completed_beats
+                )
+            for secret_id in beat.reveals_secret_ids:
+                revealed_by_beat[secret_id] = (
+                    revealed_by_beat.get(secret_id, False) or beat.id in completed_beats
+                )
+        # A truth with no establishing beat is foundational context, always available.
+        known_truth = [
+            item
+            for item in world.truth
+            if character.id in item.character_ids and established_by_beat.get(item.id, True)
+        ]
         known_secrets = [item for item in world.secrets if character.id in item.known_by_ids]
         truth_beliefs = tuple(
             ConversationBelief(
@@ -3088,6 +3119,7 @@ def create_app(
                 protected_claim_ids=(ClaimId(uuid5(namespace, f"claim:{item.id}")),),
             )
             for item in known_secrets
+            if not revealed_by_beat.get(item.id, False)
         )
         return ConversationContext(
             run_id=model.run_id,
@@ -3170,7 +3202,7 @@ def create_app(
             )
             generated = list(
                 conversation_engine.stream(
-                    character_context(model, state_model),
+                    character_context(model, state_model, database),
                     request.content,
                     history=history,
                 )

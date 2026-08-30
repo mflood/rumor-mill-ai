@@ -2601,6 +2601,79 @@ def test_streaming_conversation_is_idempotent_private_and_recovers(api) -> None:
         assert len(state.memories) == 2
 
 
+def test_character_knowledge_and_disclosure_are_gated_on_beat_completion(api) -> None:  # type: ignore[no-untyped-def]
+    """Regression test for P0-2: a character's knowledge must track beat progression.
+
+    tests/fixtures/worlds/minimal.json has Bea learn `key-opens-observatory` from the
+    `hidden-key` beat, and stop absolutely protecting `bea-has-key` once `quiet-question`
+    reveals it. Before those beats complete, neither should be visible to the model.
+    """
+    client, factory = api
+    provider = cast(MutableConversationProvider, client.app_state["conversation_provider"])
+    run_id = UUID(str(initialize(client)["id"]))
+    start_visitor_session(client)
+    conversation = client.post(
+        f"/api/v1/runs/{run_id}/conversations", json={"character_id": "bea"}
+    ).json()
+
+    def ask(question: str) -> None:
+        response = client.post(
+            f"/api/v1/conversations/{conversation['id']}/messages",
+            json={"content": question},
+        )
+        assert response.status_code == 200
+
+    def sent_text() -> str:
+        assert provider.last_request is not None
+        return "\n".join(item.content for item in provider.last_request.messages)
+
+    ask("What do you know about the observatory?")
+    before = sent_text()
+    assert "The brass key opens the abandoned observatory." not in before
+    assert "Do not disclose this protected claim" in before
+
+    now = datetime.now(UTC)
+    with factory() as database:
+        database.add(
+            JobModel(
+                run_id=run_id,
+                idempotency_key=f"run:{run_id}:beat:hidden-key",
+                kind="lighthouse_story",
+                status="completed",
+                scheduled_at=now,
+                available_at=now,
+                completed_at=now,
+                payload={"story_kind": "beat", "id": "hidden-key"},
+            )
+        )
+        database.commit()
+
+    ask("What do you know about the observatory now?")
+    after_established = sent_text()
+    assert "The brass key opens the abandoned observatory." in after_established
+    assert "Do not disclose this protected claim" in after_established
+
+    with factory() as database:
+        database.add(
+            JobModel(
+                run_id=run_id,
+                idempotency_key=f"run:{run_id}:beat:quiet-question",
+                kind="lighthouse_story",
+                status="completed",
+                scheduled_at=now,
+                available_at=now,
+                completed_at=now,
+                payload={"story_kind": "beat", "id": "quiet-question"},
+            )
+        )
+        database.commit()
+
+    ask("So the key is yours?")
+    after_revealed = sent_text()
+    assert "The brass key opens the abandoned observatory." in after_revealed
+    assert "Do not disclose this protected claim" not in after_revealed
+
+
 @pytest.mark.parametrize(
     ("failure", "status_code", "detail"),
     [
