@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from rumor_mill.adapters.persistence import create_database_engine, create_session_factory
 from rumor_mill.adapters.persistence.models import ArtifactModel, RunModel, WorldModel
-from rumor_mill.lighthouse_opening import opening_recap_artifact, opening_recap_id
+from rumor_mill.lighthouse_opening import opening_recap_artifact
 from rumor_mill.worlds.authoring import load_world
 from rumor_mill.worlds.continuity import validate_continuity
 
@@ -78,8 +78,14 @@ def _bootstrap_session(database: Session, definition: dict[str, object]) -> Boot
         )
         database.add(run)
         database.flush()
-    opening_id = opening_recap_id(run.id)
-    if database.get(ArtifactModel, opening_id) is None:
+    opening_exists = database.scalar(
+        select(ArtifactModel.id).where(
+            ArtifactModel.run_id == run.id,
+            ArtifactModel.kind == "daily_recap",
+            ArtifactModel.story_date == run.started_at.date(),
+        )
+    )
+    if opening_exists is None:
         database.add(opening_recap_artifact(run.id, run.started_at))
         database.flush()
     return BootstrapResult(world.id, run.id, created_world, created_run)
