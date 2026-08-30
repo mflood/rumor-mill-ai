@@ -34,7 +34,7 @@
   const render = (message) => {
     const item = document.createElement("li");
     item.className = `signal-message signal-message--${message.role} signal-message--${message.kind}`;
-    const label = message.kind === "action" ? "Action" : message.kind === "refusal" ? "Boundary" : message.role === "visitor" ? "You" : characterName;
+    const label = message.kind === "action" ? "Action" : message.role === "visitor" ? "You" : characterName;
     item.innerHTML = `<span>${label}</span><p></p>`;
     item.querySelector("p").textContent = message.content;
     if (message.id) {
