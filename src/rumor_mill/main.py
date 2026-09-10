@@ -985,7 +985,7 @@ def create_app(
         elif failure_is_current:
             title = "Today’s story update could not be prepared"
             body = (
-                "The public story update did not finish, and no earlier episode has been "
+                "The public story update did not finish, and no earlier story update has been "
                 "published. Your progress and private conversations are safe. Explore the "
                 "current town state or return later."
             )
@@ -1042,7 +1042,7 @@ def create_app(
             return {
                 "<!-- DISPATCH_EYEBROW -->": '<p class="eyebrow">No published story update</p>',
                 "<!-- DISPATCH_NUMBER -->": '<p class="issue-number" aria-hidden="true">—</p>',
-                "<!-- DISPATCH_RETURN_NOTE -->": '<p class="return-note"><span aria-hidden="true">↳</span> No episode has been published yet. Explore the live town while Greyhaven prepares its first dispatch.</p>',
+                "<!-- DISPATCH_RETURN_NOTE -->": '<p class="return-note"><span aria-hidden="true">↳</span> No story update has been published yet. Explore the live town while Greyhaven prepares its first dispatch.</p>',
                 "<!-- DISPATCH_HEADLINE -->": "<h1>Greyhaven waits.</h1>",
                 "<!-- DISPATCH_DEK -->": '<p class="premise">There is no published story update to read yet.</p>',
                 "<!-- DISPATCH_READING_TIME -->": '<p class="reading-time">0 public dispatches <span aria-hidden="true">·</span> No reading time yet</p>',
@@ -2280,7 +2280,7 @@ def create_app(
             return LighthouseRecommendation(
                 kind="read",
                 title="Read the latest published story update.",
-                explanation=f"The episode is available now.{thread}",
+                explanation=f"The story update is available now.{thread}",
                 cta_label="Read the story update",
                 href=f"/lighthouse/runs/{run.id}/archive/{recap.id}",
             )
@@ -2353,7 +2353,7 @@ def create_app(
         run: RunRecord, recap: PublishedRecapView | None, world: WorldDefinition
     ) -> tuple[str, str]:
         if recap is None:
-            panels = """<article class="recap-panel"><p class="panel-index">Published story update</p><h3>No episode has been published yet</h3><p>Greyhaven may still have live public activity. The recommendation alongside this briefing uses the current town state.</p></article>"""
+            panels = """<article class="recap-panel"><p class="panel-index">Published story update</p><h3>No story update has been published yet</h3><p>Greyhaven may still have live public activity. The recommendation alongside this briefing uses the current town state.</p></article>"""
             return panels, "<li><span>—</span> No published threads yet.</li>"
         base_href = f"/lighthouse/runs/{run.id}/archive/{recap.id}"
         panels = "".join(
@@ -2361,12 +2361,12 @@ def create_app(
             f'<p class="panel-index">Published dispatch {index}</p>'
             f"<h3>{escape(panel.title)}</h3><p>{escape(panel.body)}</p>"
             f'<a data-playable-action="read" href="{base_href}#dispatch-{panel.source_id}">'
-            'Read the published episode <span aria-hidden="true">→</span></a></article>'
+            'Read the published story update <span aria-hidden="true">→</span></a></article>'
             for index, panel in enumerate(recap.panels, 1)
         ) or (
             '<article class="recap-panel"><p class="panel-index">Quiet story update</p>'
             f"<h3>{escape(recap.headline)}</h3><p>{escape(recap.dek)}</p>"
-            f'<a data-playable-action="read" href="{base_href}">Read the published episode <span aria-hidden="true">→</span></a></article>'
+            f'<a data-playable-action="read" href="{base_href}">Read the published story update <span aria-hidden="true">→</span></a></article>'
         )
         character_by_id = {item.id: item for item in world.cast}
         location_by_id = {item.id: item for item in world.locations}
@@ -2937,7 +2937,7 @@ def create_app(
         if run.status != RunStatus.RUNNING and not recaps:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "published season not found")
         visible = recaps
-        boundary_note = "Showing every published episode."
+        boundary_note = "Showing every published story update."
         if through is not None:
             boundary = next(
                 (index for index, item in enumerate(recaps) if item.id == through), None
@@ -2945,12 +2945,12 @@ def create_app(
             if boundary is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "spoiler boundary not found")
             visible = recaps[: boundary + 1]
-            boundary_note = f"Spoilers stop after episode {boundary + 1}."
+            boundary_note = f"Spoilers stop after story update {boundary + 1}."
         episode_items = []
         for index, recap in enumerate(visible):
             panel_titles = "".join(f"<li>{escape(panel.title)}</li>" for panel in recap.panels)
             episode_items.append(
-                f"""<li class="episode-entry" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}"><a href="/lighthouse/runs/{run.id}/archive/{recap.id}"><span class="episode-number">{index + 1:02}</span><span class="episode-entry__copy"><time datetime="{recap.published_at.isoformat()}">{recap.story_date.strftime("%B %d, %Y")}</time><strong>{escape(recap.headline)}</strong><span>{escape(recap.dek)}</span></span></a><details><summary>Dispatches in this episode</summary><ol>{panel_titles or "<li>No dispatches were published.</li>"}</ol></details></li>"""
+                f"""<li class="episode-entry" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}"><a href="/lighthouse/runs/{run.id}/archive/{recap.id}"><span class="episode-number">{index + 1:02}</span><span class="episode-entry__copy"><time datetime="{recap.published_at.isoformat()}">{recap.story_date.strftime("%B %d, %Y")}</time><strong>{escape(recap.headline)}</strong><span>{escape(recap.dek)}</span></span></a><details><summary>Dispatches in this story update</summary><ol>{panel_titles or "<li>No dispatches were published.</li>"}</ol></details></li>"""
             )
         empty = (
             f'<li class="archive-empty"><strong>The archive is waiting.</strong><span>{escape(archive_publication_message(database, run, recaps))}</span></li>'
@@ -2997,16 +2997,16 @@ def create_app(
             or '<p class="archive-empty">This quiet-day story update contains no dispatches.</p>'
         )
         previous_link = (
-            f'<a rel="prev" href="/lighthouse/runs/{run.id}/archive/{recaps[index - 1].id}">← Previous episode</a>'
+            f'<a rel="prev" href="/lighthouse/runs/{run.id}/archive/{recaps[index - 1].id}">← Previous story update</a>'
             if index > 0
             else "<span>Beginning of the season</span>"
         )
         next_link = (
-            f'<a rel="next" href="/lighthouse/runs/{run.id}/archive/{recaps[index + 1].id}">Next episode →</a>'
+            f'<a rel="next" href="/lighthouse/runs/{run.id}/archive/{recaps[index + 1].id}">Next story update →</a>'
             if index + 1 < len(recaps)
             else "<span>You are caught up</span>"
         )
-        content = f"""<article class="episode-page" data-meaningful-public-content="dispatch" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={recap.id}">← Archive without later spoilers</a><header><p class="eyebrow">Episode {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{recap.published_at.isoformat()}">Published {recap.published_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={recap.id}&amp;artifact_id={recap.id}">Flag this episode</a></header><section class="archive-panels" aria-label="Story dispatches">{panels}</section><nav class="episode-navigation" aria-label="Episode navigation">{previous_link}{next_link}</nav></article>"""
+        content = f"""<article class="episode-page" data-meaningful-public-content="dispatch" data-dispatch-id="{recap.id}" data-panel-count="{len(recap.panels)}" aria-labelledby="episode-title"><a class="back-link" href="/lighthouse/runs/{run.id}/archive?through={recap.id}">← Archive without later spoilers</a><header><p class="eyebrow">Story update {index + 1:02} · {recap.story_date.strftime("%B %d, %Y")}</p><h1 id="episode-title">{escape(recap.headline)}</h1><p>{escape(recap.dek)}</p><time datetime="{recap.published_at.isoformat()}">Published {recap.published_at.strftime("%H:%M UTC")}</time><a class="report-signal" href="/lighthouse/runs/{run.id}/report?target_kind=episode&amp;target_id={recap.id}&amp;artifact_id={recap.id}">Flag this story update</a></header><section class="archive-panels" aria-label="Story dispatches">{panels}</section><nav class="episode-navigation" aria-label="Story update navigation">{previous_link}{next_link}</nav></article>"""
         selected = selected_story(database, token)
         return HTMLResponse(
             archive_shell(
@@ -3084,13 +3084,14 @@ def create_app(
     ) -> HTMLResponse:
         load_run(run_id)
         page = (web_root / "report.html").read_text(encoding="utf-8")
+        target_labels = {"message": "message", "recap_panel": "dispatch", "episode": "story update"}
         values = {
             "{{ run_id }}": str(run_id),
             "{{ target_kind }}": target_kind,
             "{{ target_id }}": str(target_id),
             "{{ conversation_id }}": str(conversation_id or ""),
             "{{ artifact_id }}": str(artifact_id or ""),
-            "{{ target_label }}": target_kind.replace("_", " "),
+            "{{ target_label }}": target_labels[target_kind],
         }
         for marker, value in values.items():
             page = page.replace(marker, escape(value))

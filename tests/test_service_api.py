@@ -1141,7 +1141,7 @@ def test_episode_archive_has_stable_spoiler_aware_public_deep_links(api) -> None
     assert f'href="/lighthouse/runs/{run_id}/archive/{first_id}"' in archive.text
     assert 'property="og:description"' in archive.text
     bounded = client.get(f"/lighthouse/runs/{run_id}/archive?through={first_id}")
-    assert "Spoilers stop after episode 1" in bounded.text
+    assert "Spoilers stop after story update 1" in bounded.text
     assert "Ada finds the west stalls unexpectedly empty" in bounded.text
     assert "A key changes hands" not in bounded.text
     assert client.get(f"/lighthouse/runs/{run_id}/archive?through={uuid4()}").status_code == 404
@@ -1397,7 +1397,7 @@ def test_players_report_messages_panels_and_episodes_with_safe_references(api) -
         assert "private text" not in str(stored.diagnostic_refs)
 
     episode_page = client.get(f"/lighthouse/runs/{run_id}/archive/{artifact_id}")
-    assert "Flag this episode" in episode_page.text
+    assert "Flag this story update" in episode_page.text
     assert "Flag this dispatch" in episode_page.text
 
 
@@ -1598,7 +1598,7 @@ def test_visitor_session_survives_tabs_expires_and_resets(api) -> None:  # type:
     assert "Character relationship notes, trust, and memories" in today.text
     assert "anonymous visitor record and this browser's identifier" in today.text
     assert "cannot be recovered" in today.text
-    assert "shared public episodes, dispatches, and town events remain unchanged" in today.text
+    assert "shared public story updates, dispatches, and town events remain unchanged" in today.text
 
     server_visitor = client.get("/api/v1/visitors/me").json()
     server_visitor_id = UUID(str(server_visitor["visitor_id"]))
@@ -1816,7 +1816,7 @@ def test_today_and_archive_share_one_published_recap_contract(api) -> None:  # t
     empty_today = client.get("/lighthouse/today")
     empty_archive = client.get(f"/lighthouse/runs/{run_id}/archive")
     assert "No published story update" in empty_today.text
-    assert "No episode has been published yet" in empty_today.text
+    assert "No story update has been published yet" in empty_today.text
     assert "No public story update has been filed yet" in empty_archive.text
 
     with factory() as database:
@@ -2144,7 +2144,7 @@ def test_today_dispatch_status_reconciles_jobs_and_public_authored_work(api) -> 
     failed = client.get("/lighthouse/today")
     assert 'data-state="failed"' in failed.text
     assert "could not be published" in failed.text
-    assert "no earlier episode has been published" in failed.text
+    assert "no earlier story update has been published" in failed.text
     assert "Explore the town" in failed.text
 
     with factory() as database:
